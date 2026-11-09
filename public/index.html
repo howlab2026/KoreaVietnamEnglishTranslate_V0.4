@@ -21,6 +21,11 @@
       </div>
       <div class="topbar-actions">
         <div id="status" class="status idle">대기 중</div>
+        <a href="/listener.html" target="_blank" rel="noopener noreferrer" id="listenerOpenBtn" class="listener-open-btn" title="청취자 전용 페이지 열기 (선택 언어 실시간 TTS 음성 제공)">
+          <span class="btn-icon">🎧</span>
+          <span class="btn-label">청취자 모드 (TTS)</span>
+          <span class="external-icon">↗</span>
+        </a>
         <button id="historyModalBtn" class="history-toggle-btn" title="번역 기록 보기" type="button" aria-label="번역 기록 열기">
           <span class="btn-icon">📜</span>
           <span class="btn-label">번역 기록</span>
@@ -92,6 +97,7 @@
       <button id="startBtn" class="primary" type="button">🎤 번역 시작</button>
       <button id="stopBtn" disabled type="button">⏹ 중지</button>
       <button id="clearBtn" type="button">🧹 화면 지우기</button>
+      <a href="/listener.html" target="_blank" rel="noopener noreferrer" class="control-listener-link" title="청취자 전용 페이지 새 창 열기 (TTS)">🎧 청취자 화면</a>
       <label class="font-control">
         자막 크기
         <input id="fontSize" type="range" min="22" max="60" value="34">

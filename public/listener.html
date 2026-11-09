@@ -1,0 +1,300 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+  <meta http-equiv="Pragma" content="no-cache">
+  <meta http-equiv="Expires" content="0">
+  <title>실시간 다국어 동시통역 청취자 모드 (Live Translation & TTS)</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@500;600;700;800&family=Noto+Sans+KR:wght@400;500;700;800&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/listener.css?v=2.2.0">
+</head>
+<body>
+  <!-- Audio Permission Unlock Banner (Browsers require 1 user click to play TTS audio) -->
+  <div id="audioUnlockBanner" class="audio-unlock-banner">
+    <div class="banner-content">
+      <span class="banner-icon">🎧</span>
+      <div class="banner-text">
+        <strong>실시간 TTS 음성 청취 준비</strong>
+        <p>브라우저 자동 오디오 재생 정책에 따라 아래 버튼을 클릭하여 음성 청취를 활성화해주세요.</p>
+      </div>
+      <button id="unlockAudioBtn" class="btn-unlock" type="button">
+        🔊 음성 청취 시작하기 (클릭)
+      </button>
+    </div>
+  </div>
+
+  <main class="listener-app">
+    <!-- Header Topbar -->
+    <header class="topbar">
+      <div class="brand">
+        <div class="eyebrow">AI REAL-TIME TRANSLATION & TTS LISTENER</div>
+        <h1 id="pageTitle">🎧 실시간 통역 청취자 화면</h1>
+      </div>
+
+      <div class="topbar-actions">
+        <!-- Live Connection Status Badge -->
+        <div id="connectionStatus" class="status-badge waiting">
+          <span class="status-dot"></span>
+          <span id="statusText">원어민 발화 대기 중</span>
+        </div>
+
+        <!-- Speaker Info Badge -->
+        <div id="speakerBadge" class="speaker-badge" title="현재 화자 발화 언어">
+          <span class="badge-label">화자:</span>
+          <span id="speakerLangDisplay">🇰🇷 한국어</span>
+        </div>
+
+        <!-- Dark/Light Theme Toggle -->
+        <button id="themeToggleBtn" class="theme-toggle-btn" title="밤/낮 모드 전환" type="button">
+          <span id="themeIcon">🌙</span>
+          <span id="themeLabel">밤 모드</span>
+        </button>
+
+        <!-- Back to Main Speaker Page -->
+        <a href="/" class="btn-back-main" title="메인 통역 화면으로 이동">
+          <span>🎤</span>
+          <span>메인 화자 화면</span>
+        </a>
+      </div>
+    </header>
+
+    <!-- Main Resizable Flex Container (좌측 사이드바 + 수평 리사이저 + 우측 전체 대화 화면) -->
+    <div class="listener-container">
+      <!-- Left Controls Sidebar -->
+      <aside id="settingsSidebar" class="settings-sidebar">
+        <!-- [왼쪽 맨 위] 현재 TTS를 한 내용 전용 카드 -->
+        <section class="card current-tts-card">
+          <div class="current-tts-header">
+            <div class="current-tts-title-wrap">
+              <span class="live-pulse-dot"></span>
+              <h2>현재 TTS 음성 안내</h2>
+            </div>
+            <!-- Waveform Animation Indicator (TTS 발화 중일 때 파형 애니메이션) -->
+            <div id="ttsSpeakingIndicator" class="speaking-indicator inactive" title="음성 읽는 중">
+              <span class="wave-bar"></span>
+              <span class="wave-bar"></span>
+              <span class="wave-bar"></span>
+              <span class="wave-bar"></span>
+              <span class="wave-bar"></span>
+              <span class="speaking-text">TTS 재생 중...</span>
+            </div>
+          </div>
+
+          <div class="current-tts-body">
+            <div id="currentTtsText" class="current-tts-text">
+              원어민이 발화를 시작하면 현재 TTS로 읽고 있는 문장이 여기에 표시됩니다.
+            </div>
+            <div id="currentTtsSourceContainer" class="current-tts-source">
+              <span class="source-tag">원문:</span>
+              <span id="currentTtsSourceText">대기 중...</span>
+            </div>
+          </div>
+
+          <div class="current-tts-actions">
+            <button id="replayCurrentTtsBtn" class="btn-tts-action" type="button" title="현재 문장 다시 듣기">
+              🔊 다시 듣기
+            </button>
+            <button id="stopTtsBtn" class="btn-tts-action btn-tts-stop" type="button" title="현재 음성 멈추기">
+              ⏹ 음성 정지
+            </button>
+          </div>
+        </section>
+
+        <!-- 1. Language Selector (청취자가 듣고 싶은 언어) -->
+        <section class="card config-section">
+          <div class="section-header">
+            <span class="section-icon">🌐</span>
+            <div class="section-title-wrap">
+              <h2>듣고 싶은 언어 선택</h2>
+              <p>원어민이 말하면 선택하신 언어로 번역 및 음성(TTS)이 제공됩니다.</p>
+            </div>
+          </div>
+
+          <div class="target-lang-grid" role="radiogroup" aria-label="수신 언어 선택">
+            <button id="targetKoBtn" class="lang-card-btn active" data-lang="ko" type="button">
+              <span class="flag">🇰🇷</span>
+              <div class="lang-info">
+                <span class="lang-name">한국어</span>
+                <span class="lang-sub">Korean</span>
+              </div>
+            </button>
+            <button id="targetEnBtn" class="lang-card-btn" data-lang="en" type="button">
+              <span class="flag">🇺🇸</span>
+              <div class="lang-info">
+                <span class="lang-name">English</span>
+                <span class="lang-sub">영어</span>
+              </div>
+            </button>
+            <button id="targetViBtn" class="lang-card-btn" data-lang="vi" type="button">
+              <span class="flag">🇻🇳</span>
+              <div class="lang-info">
+                <span class="lang-name">Tiếng Việt</span>
+                <span class="lang-sub">베트남어</span>
+              </div>
+            </button>
+          </div>
+        </section>
+
+        <!-- 2. TTS Voice & Audio Settings (자연스러운 AI 목소리 선택) -->
+        <section class="card config-section tts-section">
+          <div class="section-header">
+            <span class="section-icon">🗣️</span>
+            <div class="section-title-wrap">
+              <h2>자연스러운 AI 목소리 설정</h2>
+              <p>선택하신 언어(한국어·영어·베트남어)의 고품질 신경망 AI 목소리를 선택하세요.</p>
+            </div>
+          </div>
+
+          <!-- Auto TTS Toggle -->
+          <div class="tts-toggle-row">
+            <label class="switch-label" for="autoTtsToggle">
+              <span class="switch-title">실시간 자연스러운 AI 음성 자동 읽기</span>
+              <span class="switch-desc">번역된 문장이 도착하면 자연스러운 목소리로 자동 낭독합니다.</span>
+            </label>
+            <label class="switch">
+              <input type="checkbox" id="autoTtsToggle" checked>
+              <span class="slider round"></span>
+            </label>
+          </div>
+
+          <!-- Voice Selector Dropdown (다양한 목소리 선택) -->
+          <div class="form-group">
+            <label for="voiceSelect" class="form-label">
+              <span>🎤 자연스러운 AI 목소리 선택:</span>
+              <span id="voiceCountBadge" class="count-badge">자연 음성</span>
+            </label>
+            <div class="voice-select-wrapper">
+              <select id="voiceSelect" class="voice-select" title="TTS 목소리 선택">
+                <option value="">자연스러운 AI 목소리 로딩 중...</option>
+              </select>
+            </div>
+            <div class="voice-actions">
+              <button id="testVoiceBtn" class="btn-voice-test" type="button" title="선택한 목소리로 샘플 문장 미리듣기">
+                ▶ 목소리 미리듣기
+              </button>
+            </div>
+          </div>
+
+          <!-- Voice Tuning Sliders -->
+          <div class="tuning-grid">
+            <div class="tune-item">
+              <div class="tune-header">
+                <label for="ttsRate">속도 (Speed):</label>
+                <span id="rateValue" class="tune-value">1.0x</span>
+              </div>
+              <input type="range" id="ttsRate" min="0.7" max="1.5" step="0.05" value="1.0">
+            </div>
+
+            <div class="tune-item">
+              <div class="tune-header">
+                <label for="ttsPitch">음높이 (Pitch):</label>
+                <span id="pitchValue" class="tune-value">1.0</span>
+              </div>
+              <input type="range" id="ttsPitch" min="0.7" max="1.4" step="0.05" value="1.0">
+            </div>
+
+            <div class="tune-item">
+              <div class="tune-header">
+                <label for="ttsVolume">볼륨 (Volume):</label>
+                <span id="volumeValue" class="tune-value">100%</span>
+              </div>
+              <input type="range" id="ttsVolume" min="0" max="1" step="0.05" value="1.0">
+            </div>
+          </div>
+        </section>
+
+        <!-- Display Options -->
+        <section class="card config-section options-section">
+          <div class="section-header">
+            <span class="section-icon">⚙️</span>
+            <div class="section-title-wrap">
+              <h2>화면 표시 설정</h2>
+            </div>
+          </div>
+          <div class="option-row">
+            <label for="fontSizeRange">자막 크기 조절:</label>
+            <input type="range" id="fontSizeRange" min="20" max="52" value="32">
+            <span id="fontSizeDisplay">32px</span>
+          </div>
+          <div class="option-row">
+            <label class="checkbox-label">
+              <input type="checkbox" id="showSourceCheckbox" checked>
+              <span>발화 원문 문장 함께 보기</span>
+            </label>
+          </div>
+        </section>
+      </aside>
+
+      <!-- Horizontal Resizer (좌우 너비 조절용 스플리터) -->
+      <div id="hResizerHandle" class="h-resizer-handle" title="마우스로 좌우 드래그하여 설정창/전체 대화 화면 너비 조절">
+        <div class="h-resizer-line"></div>
+      </div>
+
+      <!-- Right Main Display Area: 이전 대화글 전체가 지속적으로 보이는 대형 화면 -->
+      <section id="displayMain" class="display-main">
+        <div id="liveCard" class="card full-dialogue-card" style="height: 100%; flex: 1; display: flex; flex-direction: column;">
+          <div class="dialogue-card-header">
+            <div class="dialogue-header-left">
+              <span class="live-pulse-dot"></span>
+              <span class="dialogue-tag">📜 전체 대화 자막 (실시간 누적)</span>
+              <span id="currentLangTag" class="current-lang-tag">🇰🇷 한국어</span>
+            </div>
+
+            <div class="dialogue-header-right">
+              <!-- Clear Captions Button -->
+              <button id="clearLiveTextBtn" class="btn-clear-live" type="button" title="화면 전체 대화글 비우기">
+                <span class="btn-icon">🧹</span>
+                <span>대화 지우기</span>
+              </button>
+            </div>
+          </div>
+
+          <!-- 상단 창: 현재 번역하고 있는 문장만 표시 -->
+          <div class="dialogue-split">
+            <div class="dialogue-pane pane-current">
+              <div class="pane-title">
+                <span class="pane-title-text">▶ 지금 번역 중인 문장</span>
+              </div>
+              <div id="liveCurrentText" class="current-translation-text">
+                원어민이 발화를 시작하면 현재 번역하고 있는 문장이 여기에 표시됩니다.
+              </div>
+
+              <!-- Optional Original Source Text Sub-panel -->
+              <div id="liveSourceContainer" class="live-source-container">
+                <span class="source-tag">원문:</span>
+                <span id="liveSourceText" class="live-source-text">대기 중...</span>
+              </div>
+            </div>
+
+            <!-- 하단 창: 이전까지의 대화 문장 (번역 단위마다 줄 띄움, 가득 차면 스크롤) -->
+            <div class="dialogue-pane pane-history">
+              <div class="pane-title">
+                <span class="pane-title-text">📜 이전 대화</span>
+                <span id="historyLineCount" class="pane-count">0문장</span>
+              </div>
+              <div id="liveTargetText" class="dialogue-target-text">
+                이전에 번역된 문장들이 여기에 번역 단위마다 줄을 띄워 쌓이며, 화면이 가득 차면 스크롤됩니다.
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+    </div>
+
+    <!-- Footer -->
+    <footer class="listener-footer">
+      <span>AI 실시간 통역 & 음성 청취 서비스 (TTS Live Listener)</span>
+      <span>•</span>
+      <span>Web Speech Synthesis Multi-Voice Engine</span>
+      <span>•</span>
+      <span>동시 3개 국어 (🇰🇷 한국어 · 🇺🇸 English · 🇻🇳 Tiếng Việt)</span>
+    </footer>
+  </main>
+
+  <script src="/listener.js?v=2.2.0"></script>
+</body>
+</html>

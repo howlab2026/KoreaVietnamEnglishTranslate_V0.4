@@ -232,6 +232,90 @@ h1 {
   gap: 10px;
 }
 
+/* ─── Listener Open Button (청취자 모드 새 창 열기) ─── */
+.listener-open-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 18px;
+  background: linear-gradient(135deg, #6366f1 0%, #8b5cf6 50%, #d946ef 100%);
+  color: #ffffff;
+  border: 1.5px solid rgba(255, 255, 255, 0.25);
+  border-radius: 9999px;
+  font-size: 14px;
+  font-weight: 800;
+  text-decoration: none;
+  cursor: pointer;
+  transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+  box-shadow: 0 4px 14px rgba(99, 102, 241, 0.35);
+  user-select: none;
+  position: relative;
+  overflow: hidden;
+}
+
+.listener-open-btn::after {
+  content: "";
+  position: absolute;
+  top: 0; left: -100%; width: 60%; height: 100%;
+  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.25), transparent);
+  transform: skewX(-20deg);
+  transition: 0.6s;
+}
+
+.listener-open-btn:hover::after {
+  left: 150%;
+}
+
+.listener-open-btn:hover {
+  transform: translateY(-2px) scale(1.02);
+  box-shadow: 0 6px 20px rgba(139, 92, 246, 0.5);
+  color: #ffffff;
+}
+
+.listener-open-btn .btn-icon {
+  font-size: 16px;
+  animation: pulseHeadphone 2s infinite ease-in-out;
+}
+
+.listener-open-btn .external-icon {
+  font-size: 12px;
+  opacity: 0.85;
+}
+
+@keyframes pulseHeadphone {
+  0%, 100% { transform: scale(1); }
+  50% { transform: scale(1.18); }
+}
+
+/* Controlbar Listener Sub Link */
+.control-listener-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 14px;
+  background: rgba(99, 102, 241, 0.12);
+  color: #6366f1;
+  border: 1px solid rgba(99, 102, 241, 0.35);
+  border-radius: 8px;
+  font-size: 13px;
+  font-weight: 700;
+  text-decoration: none;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+body.dark-theme .control-listener-link {
+  background: rgba(99, 102, 241, 0.22);
+  color: #a5b4fc;
+  border-color: rgba(165, 180, 252, 0.4);
+}
+
+.control-listener-link:hover {
+  background: #6366f1;
+  color: #ffffff;
+  transform: translateY(-1px);
+}
+
 /* ─── History Toggle Button (조금 크게 배치) ─── */
 .history-toggle-btn {
   display: inline-flex;

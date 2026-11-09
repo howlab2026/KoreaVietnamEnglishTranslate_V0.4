@@ -5,7 +5,6 @@
  */
 
 const MODEL = "models/gemini-3.5-live-translate-preview";
-const WS_ENDPOINT_BASE = "wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1alpha.GenerativeService.BidiGenerateContent";
 
 const LANG_CONFIGS = {
   ko: {
@@ -230,6 +229,127 @@ let currentTarget2 = "";
 let turnActive1 = false;
 let turnActive2 = false;
 let commitTimeout = null;
+// Listener Broadcast Channel & WebSocket
+const broadcastChannel = typeof BroadcastChannel !== "undefined" ? new BroadcastChannel("live_translation_stream") : null;
+let broadcastWs = null;
+
+/* ─── Speaker Auth (토큰 또는 로컬 전용) ─── */
+const WS_PROTO = location.protocol === "https:" ? "wss:" : "ws:";
+let speakerToken = "";
+try { speakerToken = sessionStorage.getItem("kv_speaker_token") || ""; } catch (_) {}
+
+async function fetchSpeakerStatus() {
+  const res = await fetch("/api/speaker-status", { cache: "no-store" });
+  return res.json();
+}
+
+/** 토큰이 필요한 서버면 입력받고, 허용되지 않는 접속이면 오류를 던진다 */
+async function ensureSpeakerAuth(forcePrompt = false) {
+  const status = await fetchSpeakerStatus();
+  if (!status.geminiConfigured) {
+    throw new Error("서버에 GEMINI_API_KEY가 설정되어 있지 않습니다.");
+  }
+  if (status.tokenRequired) {
+    if (forcePrompt || !speakerToken) {
+      const input = (prompt("화자 인증 토큰(SPEAKER_TOKEN)을 입력하세요") || "").trim();
+      if (!input) throw new Error("화자 인증 토큰이 필요합니다.");
+      speakerToken = input;
+      try { sessionStorage.setItem("kv_speaker_token", input); } catch (_) {}
+    }
+  } else if (status.allowed === false) {
+    throw new Error("화자 모드는 서버 PC에서만 사용할 수 있습니다. 외부 접속은 서버 .env에 SPEAKER_TOKEN을 설정하세요.");
+  }
+  return status;
+}
+
+function clearSpeakerToken() {
+  speakerToken = "";
+  try { sessionStorage.removeItem("kv_speaker_token"); } catch (_) {}
+}
+
+async function connectBroadcastWs() {
+  let status;
+  try {
+    status = await fetchSpeakerStatus();
+  } catch (_) {
+    return setTimeout(connectBroadcastWs, 3000);
+  }
+  // 스피커 권한이 없는 접속이면 방송 연결을 시도하지 않음(BroadcastChannel만 사용)
+  if (!status.tokenRequired && status.allowed === false) return;
+  // 토큰이 아직 없으면 세션 시작(start) 때 입력된 뒤 다시 시도
+  if (status.tokenRequired && !speakerToken) return setTimeout(connectBroadcastWs, 3000);
+
+  const wsUrl = `${WS_PROTO}//${location.host}/ws/broadcast?role=speaker&token=${encodeURIComponent(speakerToken)}`;
+  let opened = false;
+  try {
+    broadcastWs = new WebSocket(wsUrl);
+    broadcastWs.onopen = () => {
+      opened = true;
+      console.log("📡 Listener Broadcast WebSocket 연결됨 (화자)");
+      // Send current state immediately
+      emitListenerEvent({
+        type: "session_status",
+        status: ws1 || ws2 ? "live" : "idle",
+        sourceLang: selectedLang,
+        target1Lang: LANG_CONFIGS[selectedLang]?.target1.code,
+        target2Lang: LANG_CONFIGS[selectedLang]?.target2.code,
+        currentSource,
+        currentTarget1,
+        currentTarget2,
+      });
+    };
+    broadcastWs.onclose = () => {
+      // 연결 자체가 거부된 경우(토큰 오류) 다시 입력받도록 토큰 초기화
+      if (!opened && status.tokenRequired) clearSpeakerToken();
+      setTimeout(connectBroadcastWs, 3000);
+    };
+    broadcastWs.onerror = () => {
+      try { broadcastWs.close(); } catch (_) {}
+    };
+  } catch (err) {
+    console.warn("Broadcast WS init error:", err);
+    setTimeout(connectBroadcastWs, 3000);
+  }
+}
+connectBroadcastWs();
+
+function emitListenerEvent(payload) {
+  try {
+    if (broadcastChannel) {
+      broadcastChannel.postMessage(payload);
+    }
+  } catch (err) {
+    console.warn("BroadcastChannel error:", err);
+  }
+
+  if (broadcastWs && broadcastWs.readyState === WebSocket.OPEN) {
+    try {
+      broadcastWs.send(JSON.stringify(payload));
+    } catch (err) {
+      console.warn("Broadcast WS send error:", err);
+    }
+  }
+}
+
+// Throttle stream updates for smoother rendering
+let streamEmitPending = false;
+function emitThrottledStreamUpdate() {
+  if (streamEmitPending) return;
+  streamEmitPending = true;
+  requestAnimationFrame(() => {
+    streamEmitPending = false;
+    const config = LANG_CONFIGS[selectedLang];
+    emitListenerEvent({
+      type: "stream_update",
+      sourceLang: selectedLang,
+      sourceText: currentSource,
+      target1Lang: config?.target1.code,
+      target1Text: currentTarget1,
+      target2Lang: config?.target2.code,
+      target2Text: currentTarget2,
+    });
+  });
+}
 
 /* ─── Theme Management (Default: Light / Bright White) ─── */
 function setTheme(theme) {
@@ -339,6 +459,16 @@ function setLanguage(langKey) {
   currentTarget2 = "";
   turnActive1 = false;
   turnActive2 = false;
+
+  emitListenerEvent({
+    type: "lang_changed",
+    sourceLang: selectedLang,
+    sourceName: config.name,
+    target1Lang: config.target1.code,
+    target1Name: config.target1.name,
+    target2Lang: config.target2.code,
+    target2Name: config.target2.name,
+  });
 }
 
 // Bind language buttons
@@ -584,15 +714,10 @@ function resampleLinear(buffer, inputRate, outputRate = 16000) {
   return result;
 }
 
-/* ─── API Key ─── */
-let _cachedKey = null;
-async function getApiKey() {
-  if (_cachedKey) return _cachedKey;
-  const response = await fetch("/api/key");
-  const data = await response.json();
-  if (!response.ok) throw new Error(data.error || "API 키 발급 실패");
-  _cachedKey = data.key;
-  return _cachedKey;
+/* ─── Gemini 연결 URL (서버 프록시 경유 — API 키는 브라우저에 없음) ─── */
+async function getGeminiProxyUrl() {
+  await ensureSpeakerAuth();
+  return `${WS_PROTO}//${location.host}/ws/gemini?token=${encodeURIComponent(speakerToken)}`;
 }
 
 /* ─── Microphone ─── */
@@ -685,6 +810,20 @@ function scheduleTurnCommit() {
 
     if (sLast || t1Last || t2Last) {
       addHistory(sLast, t1Last, t2Last, LANG_CONFIGS[selectedLang]);
+      // 청취자 화면에 완성된 문장 전송 (TTS 발화용 sentence 및 누적 fullText)
+      emitListenerEvent({
+        type: "sentence_commit",
+        sourceLang: selectedLang,
+        sourceSentence: sLast,
+        fullSource: currentSource,
+        target1Lang: LANG_CONFIGS[selectedLang].target1.code,
+        target1Sentence: t1Last,
+        fullTarget1: currentTarget1,
+        target2Lang: LANG_CONFIGS[selectedLang].target2.code,
+        target2Sentence: t2Last,
+        fullTarget2: currentTarget2,
+        timestamp: Date.now()
+      });
     }
     turnActive1 = false;
     turnActive2 = false;
@@ -701,9 +840,8 @@ async function start() {
 
     const config = LANG_CONFIGS[selectedLang];
 
-    // Get API key for direct BidiGenerateContent endpoint
-    const apiKey = await getApiKey();
-    const wsUrl = `${WS_ENDPOINT_BASE}?key=${encodeURIComponent(apiKey)}`;
+    // 서버 프록시(/ws/gemini)를 통해 Gemini Live에 연결
+    const wsUrl = await getGeminiProxyUrl();
 
     turnActive1 = false;
     turnActive2 = false;
@@ -763,6 +901,7 @@ async function start() {
       if (content.inputTranscription?.text) {
         currentSource += content.inputTranscription.text;
         updatePanel(sourceText, currentSource);
+        emitThrottledStreamUpdate();
         scheduleTurnCommit();
       }
 
@@ -770,12 +909,14 @@ async function start() {
       if (content.outputTranscription?.text) {
         currentTarget1 += content.outputTranscription.text;
         updatePanel(target1Text, currentTarget1);
+        emitThrottledStreamUpdate();
         scheduleTurnCommit();
       } else if (content.modelTurn?.parts) {
         for (const p of content.modelTurn.parts) {
           if (p.text) {
             currentTarget1 += p.text;
             updatePanel(target1Text, currentTarget1);
+            emitThrottledStreamUpdate();
             scheduleTurnCommit();
           }
         }
@@ -838,12 +979,14 @@ async function start() {
       if (content.outputTranscription?.text) {
         currentTarget2 += content.outputTranscription.text;
         updatePanel(target2Text, currentTarget2);
+        emitThrottledStreamUpdate();
         scheduleTurnCommit();
       } else if (content.modelTurn?.parts) {
         for (const p of content.modelTurn.parts) {
           if (p.text) {
             currentTarget2 += p.text;
             updatePanel(target2Text, currentTarget2);
+            emitThrottledStreamUpdate();
             scheduleTurnCommit();
           }
         }
@@ -869,6 +1012,15 @@ async function start() {
         startedAt = Date.now();
         timerHandle = setInterval(updateTimer, 1000);
         await startMicrophone();
+
+        emitListenerEvent({
+          type: "session_status",
+          status: "live",
+          sourceLang: selectedLang,
+          sourceName: config.name,
+          target1Lang: config.target1.code,
+          target2Lang: config.target2.code,
+        });
       }
     }
   } catch (error) {
@@ -908,6 +1060,11 @@ function stop() {
   if (timerEl) timerEl.textContent = "00:00";
 
   setStatus("대기 중", "idle");
+
+  emitListenerEvent({
+    type: "session_status",
+    status: "idle",
+  });
 }
 
 /* ─── Event Listeners ─── */
@@ -925,6 +1082,10 @@ clearBtn.addEventListener("click", () => {
   currentTarget2 = "";
   turnActive1 = false;
   turnActive2 = false;
+
+  emitListenerEvent({
+    type: "clear",
+  });
 });
 
 fontSizeEl.addEventListener("input", () => {
