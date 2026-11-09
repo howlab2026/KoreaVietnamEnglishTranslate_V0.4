@@ -252,9 +252,6 @@ async function fetchSpeakerStatus() {
 /** 토큰이 필요한 서버면 입력받고, 허용되지 않는 접속이면 오류를 던진다 */
 async function ensureSpeakerAuth(forcePrompt = false) {
   const status = await fetchSpeakerStatus();
-  if (!status.geminiConfigured) {
-    throw new Error("서버(또는 Vercel 환경변수)에 GEMINI_API_KEY가 설정되어 있지 않습니다.");
-  }
   if (status.tokenRequired) {
     if (forcePrompt || !speakerToken) {
       const input = (prompt("화자 인증 토큰(SPEAKER_TOKEN)을 입력하세요") || "").trim();
@@ -732,15 +729,28 @@ function resampleLinear(buffer, inputRate, outputRate = 16000) {
 let _cachedApiKey = null;
 async function getGeminiProxyUrl() {
   const status = await ensureSpeakerAuth();
-  if (status.serverless) {
+  if (status.serverless || !status.geminiConfigured) {
     if (!_cachedApiKey) {
-      const res = await fetch(`/api/key?token=${encodeURIComponent(speakerToken)}`, { cache: "no-store" });
-      const data = await res.json();
-      if (!res.ok || !data.key) {
-        if (res.status === 401) clearSpeakerToken();
-        throw new Error(data.error || "API 키 발급 실패");
+      if (status.geminiConfigured) {
+        const res = await fetch(`/api/key?token=${encodeURIComponent(speakerToken)}`, { cache: "no-store" });
+        const data = await res.json();
+        if (!res.ok || !data.key) {
+          if (res.status === 401) clearSpeakerToken();
+          throw new Error(data.error || "API 키 발급 실패");
+        }
+        _cachedApiKey = data.key;
+      } else {
+        let savedKey = "";
+        try { savedKey = localStorage.getItem("kv_gemini_api_key") || ""; } catch (_) {}
+        if (!savedKey) {
+          savedKey = (prompt("Vercel 환경변수에 GEMINI_API_KEY가 아직 설정되지 않았습니다.\nGemini API 키를 입력하시면 바로 사용 가능합니다:") || "").trim();
+          if (!savedKey) {
+            throw new Error("Vercel 환경변수(GEMINI_API_KEY)를 설정하거나 API 키를 입력해주세요.");
+          }
+          try { localStorage.setItem("kv_gemini_api_key", savedKey); } catch (_) {}
+        }
+        _cachedApiKey = savedKey;
       }
-      _cachedApiKey = data.key;
     }
     return `${WS_ENDPOINT_BASE}?key=${encodeURIComponent(_cachedApiKey)}`;
   }
@@ -957,8 +967,15 @@ async function start() {
     ws1.onerror = (e) => console.error("WS1 오류:", e);
     ws1.onclose = (e) => {
       console.log("WS1 종료:", e.code, e.reason);
-      if (e.code !== 1000 && (ws1 || ws2)) {
-        setStatus(`WS1 연결 끊김 (${e.code})`, "error");
+      if (e.code !== 1000) {
+        if (!isReady1) {
+          _cachedApiKey = null;
+          try { localStorage.removeItem("kv_gemini_api_key"); } catch (_) {}
+          startBtn.disabled = false;
+        }
+        if (ws1 || ws2) {
+          setStatus(`WS1 연결 끊김 (${e.code})`, "error");
+        }
       }
     };
 
