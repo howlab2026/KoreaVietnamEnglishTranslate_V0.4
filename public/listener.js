@@ -151,43 +151,69 @@ document.addEventListener("click", () => {
 }, { once: true });
 
 /* ─── 3. Natural AI Voice Management (Strictly KO, EN, VI only) ─── */
+const DEFAULT_NEURAL_VOICES = {
+  ko: [
+    { id: "ko-KR-SunHiNeural", name: "선희 (여성 · 부드럽고 자연스러운 아나운서)", gender: "Female", lang: "ko" },
+    { id: "ko-KR-InJoonNeural", name: "인준 (남성 · 신뢰감 있고 부드러운 아나운서)", gender: "Male", lang: "ko" },
+    { id: "ko-KR-HyunsuMultilingualNeural", name: "현수 (남성 · 생동감 있는 자연스러운 대화체)", gender: "Male", lang: "ko" }
+  ],
+  en: [
+    { id: "en-US-JennyNeural", name: "Jenny (여성 · 가장 자연스러운 인기 AI 목소리)", gender: "Female", lang: "en" },
+    { id: "en-US-GuyNeural", name: "Guy (남성 · 편안하고 자연스러운 대화체)", gender: "Male", lang: "en" },
+    { id: "en-US-AriaNeural", name: "Aria (여성 · 명료하고 활기찬 뉴스/발표 톤)", gender: "Female", lang: "en" },
+    { id: "en-US-ChristopherNeural", name: "Christopher (남성 · 차분하고 중후한 신뢰감 톤)", gender: "Male", lang: "en" },
+    { id: "en-US-AvaNeural", name: "Ava (여성 · 세련되고 부드러운 톤)", gender: "Female", lang: "en" },
+    { id: "en-US-AndrewNeural", name: "Andrew (남성 · 따뜻하고 친근한 톤)", gender: "Male", lang: "en" }
+  ],
+  vi: [
+    { id: "vi-VN-HoaiMyNeural", name: "Hoài My (여성 · 성조와 억양이 완벽한 초자연 음성)", gender: "Female", lang: "vi" },
+    { id: "vi-VN-NamMinhNeural", name: "Nam Minh (남성 · 명확하고 부드러운 표준 성조 음성)", gender: "Male", lang: "vi" }
+  ]
+};
+
+function populateVoiceOptions(langCode, voices) {
+  naturalVoiceList = voices;
+  voiceSelect.innerHTML = "";
+  if (voiceCountBadge) voiceCountBadge.textContent = `${voices.length}개 자연 음성`;
+
+  const savedVoiceId = localStorage.getItem(`listener_voice_${langCode}`);
+  let matched = false;
+
+  voices.forEach((v, idx) => {
+    const option = document.createElement("option");
+    option.value = v.id;
+    const genderIcon = v.gender === "Female" ? "👩" : "👨";
+    option.textContent = `✨ ${genderIcon} ${v.name}`;
+    if (savedVoiceId && v.id === savedVoiceId) {
+      option.selected = true;
+      matched = true;
+    } else if (!savedVoiceId && idx === 0) {
+      option.selected = true;
+      matched = true;
+    }
+    voiceSelect.appendChild(option);
+  });
+
+  if (!matched && voices.length > 0) {
+    voiceSelect.selectedIndex = 0;
+  }
+}
+
 async function loadVoicesForLanguage(langCode) {
   if (!voiceSelect) return;
   voiceSelect.innerHTML = `<option value="">자연스러운 AI 목소리 로딩 중...</option>`;
 
   try {
     const res = await fetch(`/api/voices?lang=${langCode}`);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const data = await res.json();
-    const voices = data.voices || [];
-    naturalVoiceList = voices;
-
-    voiceSelect.innerHTML = "";
-    voiceCountBadge.textContent = `${voices.length}개 자연 음성`;
-
-    const savedVoiceId = localStorage.getItem(`listener_voice_${langCode}`);
-    let matched = false;
-
-    voices.forEach((v, idx) => {
-      const option = document.createElement("option");
-      option.value = v.id;
-      const genderIcon = v.gender === "Female" ? "👩" : "👨";
-      option.textContent = `✨ ${genderIcon} ${v.name}`;
-      if (savedVoiceId && v.id === savedVoiceId) {
-        option.selected = true;
-        matched = true;
-      } else if (!savedVoiceId && idx === 0) {
-        option.selected = true;
-        matched = true;
-      }
-      voiceSelect.appendChild(option);
-    });
-
-    if (!matched && voices.length > 0) {
-      voiceSelect.selectedIndex = 0;
-    }
+    const voices = (Array.isArray(data.voices) && data.voices.length > 0)
+      ? data.voices
+      : (DEFAULT_NEURAL_VOICES[langCode] || []);
+    populateVoiceOptions(langCode, voices);
   } catch (err) {
-    console.error("음성 목록 로드 실패:", err);
-    voiceSelect.innerHTML = `<option value="">목소리 로드 실패 (네트워크 확인)</option>`;
+    console.warn("서버 음성 목록 로드 실패, 내장 프리셋 사용:", err);
+    populateVoiceOptions(langCode, DEFAULT_NEURAL_VOICES[langCode] || []);
   }
 }
 
@@ -705,8 +731,47 @@ if (typeof BroadcastChannel !== "undefined") {
   };
 }
 
-// 2. WebSocket (/ws/broadcast) for multi-device & network listeners
-function connectListenerWs() {
+// 2. WebSocket (/ws/broadcast) for local server & HTTP polling (/api/broadcast) for Vercel serverless
+let lastBroadcastSeq = 0;
+
+async function startServerlessBroadcastPolling() {
+  updateConnectionState("waiting", "원어민 발화 대기 중");
+  const poll = async () => {
+    try {
+      const res = await fetch(`/api/broadcast?since=${lastBroadcastSeq}`, { cache: "no-store" });
+      if (res.ok) {
+        const data = await res.json();
+        if (lastBroadcastSeq === 0) {
+          if (data.sessionStatus) handleIncomingEvent(data.sessionStatus);
+          if (data.lastCommit) handleIncomingEvent({ ...data.lastCommit, replay: true });
+        }
+        if (Array.isArray(data.events)) {
+          for (const ev of data.events) {
+            handleIncomingEvent(ev);
+          }
+        }
+        if (typeof data.seq === "number") {
+          lastBroadcastSeq = data.seq;
+        }
+      }
+    } catch (_) {}
+    setTimeout(poll, 1500);
+  };
+  poll();
+}
+
+async function connectListenerWs() {
+  try {
+    const statusRes = await fetch("/api/speaker-status", { cache: "no-store" });
+    if (statusRes.ok) {
+      const statusData = await statusRes.json();
+      if (statusData.serverless) {
+        console.log("☁️ Serverless 환경 감지: BroadcastChannel + HTTP 폴링 모드 활성화");
+        return startServerlessBroadcastPolling();
+      }
+    }
+  } catch (_) {}
+
   const protocol = location.protocol === "https:" ? "wss:" : "ws:";
   const wsUrl = `${protocol}//${location.host}/ws/broadcast`;
   let ws;
@@ -728,7 +793,9 @@ function connectListenerWs() {
     };
 
     ws.onclose = () => {
-      updateConnectionState("waiting", "연결 재시도 중...");
+      if (!connectionStatus?.classList.contains("live")) {
+        updateConnectionState("waiting", "원어민 발화 대기 중");
+      }
       setTimeout(connectListenerWs, 3000);
     };
 

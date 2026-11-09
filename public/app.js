@@ -5,6 +5,7 @@
  */
 
 const MODEL = "models/gemini-3.5-live-translate-preview";
+const WS_ENDPOINT_BASE = "wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1alpha.GenerativeService.BidiGenerateContent";
 
 const LANG_CONFIGS = {
   ko: {
@@ -233,21 +234,26 @@ let commitTimeout = null;
 const broadcastChannel = typeof BroadcastChannel !== "undefined" ? new BroadcastChannel("live_translation_stream") : null;
 let broadcastWs = null;
 
-/* ─── Speaker Auth (토큰 또는 로컬 전용) ─── */
+/* ─── Speaker Auth (토큰 또는 클라우드/로컬 지원) ─── */
 const WS_PROTO = location.protocol === "https:" ? "wss:" : "ws:";
 let speakerToken = "";
+let isServerlessEnv = false;
 try { speakerToken = sessionStorage.getItem("kv_speaker_token") || ""; } catch (_) {}
 
 async function fetchSpeakerStatus() {
   const res = await fetch("/api/speaker-status", { cache: "no-store" });
-  return res.json();
+  const data = await res.json();
+  if (typeof data.serverless === "boolean") {
+    isServerlessEnv = data.serverless;
+  }
+  return data;
 }
 
 /** 토큰이 필요한 서버면 입력받고, 허용되지 않는 접속이면 오류를 던진다 */
 async function ensureSpeakerAuth(forcePrompt = false) {
   const status = await fetchSpeakerStatus();
   if (!status.geminiConfigured) {
-    throw new Error("서버에 GEMINI_API_KEY가 설정되어 있지 않습니다.");
+    throw new Error("서버(또는 Vercel 환경변수)에 GEMINI_API_KEY가 설정되어 있지 않습니다.");
   }
   if (status.tokenRequired) {
     if (forcePrompt || !speakerToken) {
@@ -274,6 +280,8 @@ async function connectBroadcastWs() {
   } catch (_) {
     return setTimeout(connectBroadcastWs, 3000);
   }
+  // Vercel 등 서버리스 환경에서는 WebSocket 서버 대신 BroadcastChannel + HTTP 릴레이 사용
+  if (status.serverless) return;
   // 스피커 권한이 없는 접속이면 방송 연결을 시도하지 않음(BroadcastChannel만 사용)
   if (!status.tokenRequired && status.allowed === false) return;
   // 토큰이 아직 없으면 세션 시작(start) 때 입력된 뒤 다시 시도
@@ -328,6 +336,12 @@ function emitListenerEvent(payload) {
     } catch (err) {
       console.warn("Broadcast WS send error:", err);
     }
+  } else if (isServerlessEnv && payload && payload.type !== "stream_update") {
+    fetch(`/api/broadcast?token=${encodeURIComponent(speakerToken)}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    }).catch(() => {});
   }
 }
 
@@ -714,9 +728,22 @@ function resampleLinear(buffer, inputRate, outputRate = 16000) {
   return result;
 }
 
-/* ─── Gemini 연결 URL (서버 프록시 경유 — API 키는 브라우저에 없음) ─── */
+/* ─── Gemini 연결 URL (로컬 서버 프록시 또는 Vercel/클라우드 직접 연결) ─── */
+let _cachedApiKey = null;
 async function getGeminiProxyUrl() {
-  await ensureSpeakerAuth();
+  const status = await ensureSpeakerAuth();
+  if (status.serverless) {
+    if (!_cachedApiKey) {
+      const res = await fetch(`/api/key?token=${encodeURIComponent(speakerToken)}`, { cache: "no-store" });
+      const data = await res.json();
+      if (!res.ok || !data.key) {
+        if (res.status === 401) clearSpeakerToken();
+        throw new Error(data.error || "API 키 발급 실패");
+      }
+      _cachedApiKey = data.key;
+    }
+    return `${WS_ENDPOINT_BASE}?key=${encodeURIComponent(_cachedApiKey)}`;
+  }
   return `${WS_PROTO}//${location.host}/ws/gemini?token=${encodeURIComponent(speakerToken)}`;
 }
 

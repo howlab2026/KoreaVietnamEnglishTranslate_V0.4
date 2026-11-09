@@ -11,9 +11,9 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 const app = express();
-const server = http.createServer(app);
 const port = Number(process.env.PORT || 3000);
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
+const IS_VERCEL = Boolean(process.env.VERCEL);
 
 if (!GEMINI_API_KEY) {
   console.warn("WARNING: GEMINI_API_KEY is not set.");
@@ -176,16 +176,11 @@ app.get("/api/tts", async (req, res) => {
 /**
  * 화자(Speaker) 인증
  * - SPEAKER_TOKEN 설정 시: 토큰이 일치하는 클라이언트만 화자 권한
- * - 미설정 시: 서버가 실행 중인 PC(loopback)에서 접속한 경우만 화자 권한
- * - 다른 사이트에서 오는 WebSocket(Origin 불일치)은 항상 거부
+ * - 미설정 시: 동일 출처(Origin) 접속 허용 (로컬 및 Vercel 클라우드 배포 환경 모두 지원)
  */
 const SPEAKER_TOKEN = process.env.SPEAKER_TOKEN || "";
 const GEMINI_WS_URL =
   "wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1alpha.GenerativeService.BidiGenerateContent";
-
-function isLoopback(addr) {
-  return addr === "127.0.0.1" || addr === "::1" || addr === "::ffff:127.0.0.1";
-}
 
 function safeEqual(a, b) {
   const ba = Buffer.from(String(a));
@@ -206,138 +201,76 @@ function sameOrigin(req) {
 function isSpeakerAuthorized(req, token) {
   if (!sameOrigin(req)) return false;
   if (SPEAKER_TOKEN) return typeof token === "string" && safeEqual(token, SPEAKER_TOKEN);
-  return isLoopback(req.socket.remoteAddress);
+  return true;
 }
 
 /** 화자 화면이 토큰 입력이 필요한지 / 현재 접속이 허용되는지 안내 (비밀 값은 반환하지 않음) */
-app.get("/api/speaker-status", (req, res) => {
+app.get("/api/speaker-status", (_req, res) => {
   res.json({
     tokenRequired: Boolean(SPEAKER_TOKEN),
-    allowed: SPEAKER_TOKEN ? null : isLoopback(req.socket.remoteAddress),
+    allowed: true,
     geminiConfigured: Boolean(GEMINI_API_KEY),
-  });
-});
-
-/** 예전 방식(브라우저에 API 키 반환)은 제거됨 */
-app.get("/api/key", (_req, res) => {
-  res.status(410).json({ error: "Removed. Use the /ws/gemini server proxy." });
-});
-
-const broadcastWss = new WebSocketServer({ noServer: true, maxPayload: 256 * 1024 });
-const geminiWss = new WebSocketServer({ noServer: true, maxPayload: 2 * 1024 * 1024 });
-let lastCommitPayload = null;
-
-function rejectUpgrade(socket, status, text) {
-  socket.write(`HTTP/1.1 ${status} ${text}\r\nConnection: close\r\n\r\n`);
-  socket.destroy();
-}
-
-function safeClose(ws, code, reason) {
-  const valid =
-    (code >= 1000 && code <= 1003) || (code >= 1007 && code <= 1014) || (code >= 3000 && code <= 4999);
-  try {
-    ws.close(valid ? code : 1011, String(reason || "").slice(0, 100));
-  } catch (_) {}
-}
-
-server.on("upgrade", (req, socket, head) => {
-  let url;
-  try {
-    url = new URL(req.url, "http://localhost");
-  } catch {
-    return socket.destroy();
-  }
-  const token = url.searchParams.get("token");
-
-  if (url.pathname === "/ws/broadcast") {
-    const wantsSpeaker = url.searchParams.get("role") === "speaker";
-    const isSpeaker = wantsSpeaker && isSpeakerAuthorized(req, token);
-    if (wantsSpeaker && !isSpeaker) return rejectUpgrade(socket, 401, "Unauthorized");
-    return broadcastWss.handleUpgrade(req, socket, head, (ws) => {
-      ws.isSpeaker = isSpeaker;
-      broadcastWss.emit("connection", ws, req);
-    });
-  }
-
-  if (url.pathname === "/ws/gemini") {
-    if (!isSpeakerAuthorized(req, token)) return rejectUpgrade(socket, 401, "Unauthorized");
-    return geminiWss.handleUpgrade(req, socket, head, (ws) => geminiWss.emit("connection", ws, req));
-  }
-
-  socket.destroy();
-});
-
-/** 화자 → 서버 → 청취자 방송. 청취자 연결은 수신 전용(보낸 메시지는 무시) */
-broadcastWss.on("connection", (ws) => {
-  ws.isAlive = true;
-  ws.on("pong", () => { ws.isAlive = true; });
-
-  if (!ws.isSpeaker && lastCommitPayload) {
-    try {
-      ws.send(JSON.stringify({ ...lastCommitPayload, replay: true }));
-    } catch (_) {}
-  }
-
-  ws.on("message", (data, isBinary) => {
-    if (!ws.isSpeaker) return;
-    if (!isBinary) {
-      try {
-        const parsed = JSON.parse(data.toString());
-        if (parsed?.type === "sentence_commit") lastCommitPayload = parsed;
-        else if (parsed?.type === "clear") lastCommitPayload = null;
-      } catch (_) {}
-    }
-    broadcastWss.clients.forEach((client) => {
-      if (client !== ws && client.readyState === WebSocket.OPEN) {
-        client.send(data, { binary: isBinary });
-      }
-    });
+    serverless: IS_VERCEL,
   });
 });
 
 /**
- * Gemini Live 프록시: 브라우저 ↔ 서버 ↔ Gemini.
- * API 키는 서버에서만 사용하고 브라우저에는 절대 전달되지 않는다.
+ * GET /api/key
+ * Vercel 등 서버리스 환경(WebSocket 프록시 미지원) 및 브라우저 직접 연결을 위한 API 키 엔드포인트
  */
-geminiWss.on("connection", (client) => {
-  if (!GEMINI_API_KEY) return safeClose(client, 1011, "GEMINI_API_KEY is not configured");
-
-  client.isAlive = true;
-  client.on("pong", () => { client.isAlive = true; });
-
-  const upstream = new WebSocket(`${GEMINI_WS_URL}?key=${encodeURIComponent(GEMINI_API_KEY)}`);
-  const pending = [];
-
-  client.on("message", (data, isBinary) => {
-    if (upstream.readyState === WebSocket.OPEN) upstream.send(data, { binary: isBinary });
-    else if (upstream.readyState === WebSocket.CONNECTING) pending.push([data, isBinary]);
-  });
-  upstream.on("open", () => {
-    for (const [d, b] of pending) upstream.send(d, { binary: b });
-    pending.length = 0;
-  });
-  upstream.on("message", (data, isBinary) => {
-    if (client.readyState === WebSocket.OPEN) client.send(data, { binary: isBinary });
-  });
-  upstream.on("close", (code, reason) => safeClose(client, code, reason.toString()));
-  upstream.on("error", (err) => {
-    console.error("Gemini upstream error:", err.message);
-    safeClose(client, 1011, "Gemini upstream error");
-  });
-  client.on("close", () => { try { upstream.close(); } catch (_) {} });
-  client.on("error", () => { try { upstream.terminate(); } catch (_) {} });
+app.get("/api/key", (req, res) => {
+  const token = String(req.query.token || req.headers["x-speaker-token"] || "");
+  if (!isSpeakerAuthorized(req, token)) {
+    return res.status(401).json({ error: "화자 인증 토큰(SPEAKER_TOKEN)이 올바르지 않습니다." });
+  }
+  if (!GEMINI_API_KEY) {
+    return res.status(500).json({ error: "GEMINI_API_KEY가 설정되어 있지 않습니다. (.env 또는 Vercel 환경변수를 확인하세요)" });
+  }
+  res.json({ key: GEMINI_API_KEY });
 });
 
-const heartbeat = setInterval(() => {
-  for (const wss of [broadcastWss, geminiWss]) {
-    wss.clients.forEach((ws) => {
-      if (ws.isAlive === false) return ws.terminate();
-      ws.isAlive = false;
-      try { ws.ping(); } catch (_) {}
-    });
+let lastCommitPayload = null;
+let latestSessionStatus = null;
+let broadcastSeq = 0;
+const recentBroadcastEvents = [];
+
+/**
+ * HTTP 기반 청취자 브로드캐스트 릴레이 (Vercel 서버리스 환경 호환용)
+ */
+app.post("/api/broadcast", (req, res) => {
+  const token = String(req.query.token || req.headers["x-speaker-token"] || "");
+  if (!isSpeakerAuthorized(req, token)) {
+    return res.status(401).json({ error: "Unauthorized" });
   }
-}, 30_000);
-heartbeat.unref();
+  const event = req.body;
+  if (!event || typeof event !== "object") {
+    return res.status(400).json({ error: "Invalid event payload" });
+  }
+  broadcastSeq += 1;
+  if (event.type === "sentence_commit") lastCommitPayload = event;
+  else if (event.type === "clear") {
+    lastCommitPayload = null;
+    recentBroadcastEvents.length = 0;
+  } else if (event.type === "session_status") {
+    latestSessionStatus = event;
+  }
+  recentBroadcastEvents.push({ seq: broadcastSeq, ts: Date.now(), event });
+  if (recentBroadcastEvents.length > 60) recentBroadcastEvents.shift();
+  res.json({ ok: true, seq: broadcastSeq });
+});
+
+app.get("/api/broadcast", (req, res) => {
+  const since = Number(req.query.since || 0);
+  const events = since > 0
+    ? recentBroadcastEvents.filter((item) => item.seq > since).map((item) => item.event)
+    : [];
+  res.json({
+    seq: broadcastSeq,
+    events,
+    lastCommit: since === 0 ? lastCommitPayload : undefined,
+    sessionStatus: since === 0 ? latestSessionStatus : undefined,
+  });
+});
 
 app.use((_req, res, next) => {
   res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate, proxy-revalidate");
@@ -357,8 +290,127 @@ app.get("*splat", (_req, res) => {
   res.sendFile(path.join(__dirname, "public", "index.html"));
 });
 
-server.listen(port, () => {
-  console.log(`K-V Live Caption & Listener: http://localhost:${port}`);
-  console.log(`Listener Page: http://localhost:${port}/listener.html`);
-});
+if (!IS_VERCEL) {
+  const server = http.createServer(app);
+  const broadcastWss = new WebSocketServer({ noServer: true, maxPayload: 256 * 1024 });
+  const geminiWss = new WebSocketServer({ noServer: true, maxPayload: 2 * 1024 * 1024 });
+
+  function rejectUpgrade(socket, status, text) {
+    socket.write(`HTTP/1.1 ${status} ${text}\r\nConnection: close\r\n\r\n`);
+    socket.destroy();
+  }
+
+  function safeClose(ws, code, reason) {
+    const valid =
+      (code >= 1000 && code <= 1003) || (code >= 1007 && code <= 1014) || (code >= 3000 && code <= 4999);
+    try {
+      ws.close(valid ? code : 1011, String(reason || "").slice(0, 100));
+    } catch (_) {}
+  }
+
+  server.on("upgrade", (req, socket, head) => {
+    let url;
+    try {
+      url = new URL(req.url, "http://localhost");
+    } catch {
+      return socket.destroy();
+    }
+    const token = url.searchParams.get("token");
+
+    if (url.pathname === "/ws/broadcast") {
+      const wantsSpeaker = url.searchParams.get("role") === "speaker";
+      const isSpeaker = wantsSpeaker && isSpeakerAuthorized(req, token);
+      if (wantsSpeaker && !isSpeaker) return rejectUpgrade(socket, 401, "Unauthorized");
+      return broadcastWss.handleUpgrade(req, socket, head, (ws) => {
+        ws.isSpeaker = isSpeaker;
+        broadcastWss.emit("connection", ws, req);
+      });
+    }
+
+    if (url.pathname === "/ws/gemini") {
+      if (!isSpeakerAuthorized(req, token)) return rejectUpgrade(socket, 401, "Unauthorized");
+      return geminiWss.handleUpgrade(req, socket, head, (ws) => geminiWss.emit("connection", ws, req));
+    }
+
+    socket.destroy();
+  });
+
+  /** 화자 → 서버 → 청취자 방송. 청취자 연결은 수신 전용(보낸 메시지는 무시) */
+  broadcastWss.on("connection", (ws) => {
+    ws.isAlive = true;
+    ws.on("pong", () => { ws.isAlive = true; });
+
+    if (!ws.isSpeaker && lastCommitPayload) {
+      try {
+        ws.send(JSON.stringify({ ...lastCommitPayload, replay: true }));
+      } catch (_) {}
+    }
+
+    ws.on("message", (data, isBinary) => {
+      if (!ws.isSpeaker) return;
+      if (!isBinary) {
+        try {
+          const parsed = JSON.parse(data.toString());
+          if (parsed?.type === "sentence_commit") lastCommitPayload = parsed;
+          else if (parsed?.type === "clear") lastCommitPayload = null;
+        } catch (_) {}
+      }
+      broadcastWss.clients.forEach((client) => {
+        if (client !== ws && client.readyState === WebSocket.OPEN) {
+          client.send(data, { binary: isBinary });
+        }
+      });
+    });
+  });
+
+  /**
+   * Gemini Live 프록시: 브라우저 ↔ 서버 ↔ Gemini (로컬 서버 전용)
+   */
+  geminiWss.on("connection", (client) => {
+    if (!GEMINI_API_KEY) return safeClose(client, 1011, "GEMINI_API_KEY is not configured");
+
+    client.isAlive = true;
+    client.on("pong", () => { client.isAlive = true; });
+
+    const upstream = new WebSocket(`${GEMINI_WS_URL}?key=${encodeURIComponent(GEMINI_API_KEY)}`);
+    const pending = [];
+
+    client.on("message", (data, isBinary) => {
+      if (upstream.readyState === WebSocket.OPEN) upstream.send(data, { binary: isBinary });
+      else if (upstream.readyState === WebSocket.CONNECTING) pending.push([data, isBinary]);
+    });
+    upstream.on("open", () => {
+      for (const [d, b] of pending) upstream.send(d, { binary: b });
+      pending.length = 0;
+    });
+    upstream.on("message", (data, isBinary) => {
+      if (client.readyState === WebSocket.OPEN) client.send(data, { binary: isBinary });
+    });
+    upstream.on("close", (code, reason) => safeClose(client, code, reason.toString()));
+    upstream.on("error", (err) => {
+      console.error("Gemini upstream error:", err.message);
+      safeClose(client, 1011, "Gemini upstream error");
+    });
+    client.on("close", () => { try { upstream.close(); } catch (_) {} });
+    client.on("error", () => { try { upstream.terminate(); } catch (_) {} });
+  });
+
+  const heartbeat = setInterval(() => {
+    for (const wss of [broadcastWss, geminiWss]) {
+      wss.clients.forEach((ws) => {
+        if (ws.isAlive === false) return ws.terminate();
+        ws.isAlive = false;
+        try { ws.ping(); } catch (_) {}
+      });
+    }
+  }, 30_000);
+  heartbeat.unref();
+
+  server.listen(port, () => {
+    console.log(`K-V Live Caption & Listener: http://localhost:${port}`);
+    console.log(`Listener Page: http://localhost:${port}/listener.html`);
+  });
+}
+
+export default app;
 
