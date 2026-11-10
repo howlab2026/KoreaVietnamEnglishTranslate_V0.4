@@ -102,6 +102,15 @@ let lastCommitKey = "";
 let currentSentenceText = "";
 let currentSourceSentence = "";
 let historySentences = []; // 이전까지의 대화 문장들 (번역 단위별 보관)
+const listenerBroadcastChannel = typeof BroadcastChannel !== "undefined" ? new BroadcastChannel("live_translation_stream") : null;
+
+function notifySpeakerTtsStatus(speaking) {
+  try {
+    if (listenerBroadcastChannel) {
+      listenerBroadcastChannel.postMessage({ type: "tts_status", speaking: Boolean(speaking) });
+    }
+  } catch (_) {}
+}
 
 /* ─── 1. Theme Management ─── */
 function setTheme(theme) {
@@ -392,6 +401,7 @@ testVoiceBtn?.addEventListener("click", () => {
 });
 
 function updateSpeakingIndicator(active) {
+  notifySpeakerTtsStatus(active);
   if (!ttsSpeakingIndicator) return;
   ttsSpeakingIndicator.classList.toggle("inactive", !active);
 }
@@ -644,8 +654,14 @@ function handleIncomingEvent(event) {
   if (!event || !event.type) return;
 
   switch (event.type) {
+    case "stop_tts": {
+      stopTts();
+      break;
+    }
+
     case "session_status": {
       if (event.status === "live") {
+        stopTts();
         updateConnectionState("live", "🟢 원어민 발화 중 (실시간)");
       } else {
         updateConnectionState("waiting", "⚪ 원어민 발화 대기 중");
@@ -724,9 +740,9 @@ function handleIncomingEvent(event) {
 }
 
 // 1. BroadcastChannel (Same browser instant inter-tab communication)
-if (typeof BroadcastChannel !== "undefined") {
-  const bc = new BroadcastChannel("live_translation_stream");
-  bc.onmessage = (e) => {
+if (listenerBroadcastChannel) {
+  listenerBroadcastChannel.onmessage = (e) => {
+    if (e.data?.type === "tts_status") return;
     handleIncomingEvent(e.data);
   };
 }

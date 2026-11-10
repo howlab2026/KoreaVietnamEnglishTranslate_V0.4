@@ -230,9 +230,34 @@ let currentTarget2 = "";
 let turnActive1 = false;
 let turnActive2 = false;
 let commitTimeout = null;
+
+// Single-Sentence Mode & Anti-Howling State
+let sentenceMicLocked = false;
+let hasCommittedSentence = false;
+let ws1TurnDone = false;
+let ws2TurnDone = false;
+let voiceDetectedInSentence = false;
+let voiceStartAt = 0;
+let lastVoiceAt = 0;
+let isTtsPlayingOnListener = false;
+
 // Listener Broadcast Channel & WebSocket
 const broadcastChannel = typeof BroadcastChannel !== "undefined" ? new BroadcastChannel("live_translation_stream") : null;
 let broadcastWs = null;
+
+if (broadcastChannel) {
+  broadcastChannel.onmessage = (e) => {
+    const data = e.data;
+    if (!data || typeof data !== "object") return;
+    if (data.type === "tts_status") {
+      isTtsPlayingOnListener = Boolean(data.speaking);
+      // TTS가 재생되기 시작하면 마이크가 열려 있을 경우 즉시 차단하여 하울링 원천 방지
+      if (isTtsPlayingOnListener && (ws1 || ws2) && !sentenceMicLocked) {
+        lockMicrophoneForSingleSentence();
+      }
+    }
+  };
+}
 
 /* ─── Speaker Auth (토큰 또는 클라우드/로컬 지원) ─── */
 const WS_PROTO = location.protocol === "https:" ? "wss:" : "ws:";
@@ -757,6 +782,97 @@ async function getGeminiProxyUrl() {
   return `${WS_PROTO}//${location.host}/ws/gemini?token=${encodeURIComponent(speakerToken)}`;
 }
 
+/* ─── Single-Sentence Lock & Auto Cut-Off (하울링 및 다른 말 유입 원천 차단) ─── */
+function lockMicrophoneForSingleSentence() {
+  if (sentenceMicLocked || hasCommittedSentence) return;
+  sentenceMicLocked = true;
+
+  // 하드웨어 마이크 트랙 즉시 음소거 (하울링/추가 발화 유입 차단)
+  if (mediaStream) {
+    mediaStream.getAudioTracks().forEach((track) => {
+      track.enabled = false;
+    });
+  }
+  if (micMeterBar) micMeterBar.style.width = "0%";
+
+  setStatus("🔒 1문장 입력 완료 — 번역 확정 중 (마이크 차단됨)", "live");
+  scheduleSingleSentenceFinalize(1100);
+}
+
+function scheduleSingleSentenceFinalize(delayMs = 600) {
+  if (hasCommittedSentence) return;
+  if (commitTimeout) clearTimeout(commitTimeout);
+  commitTimeout = setTimeout(() => {
+    finalizeSingleSentence();
+  }, delayMs);
+}
+
+function finalizeSingleSentence() {
+  if (hasCommittedSentence) return;
+
+  const sFinal = currentSource.replace(/\s+/g, " ").trim();
+  const t1Final = currentTarget1.replace(/\s+/g, " ").trim();
+  const t2Final = currentTarget2.replace(/\s+/g, " ").trim();
+
+  if (!sFinal && !t1Final && !t2Final) return;
+
+  hasCommittedSentence = true;
+  sentenceMicLocked = true;
+
+  if (commitTimeout) {
+    clearTimeout(commitTimeout);
+    commitTimeout = null;
+  }
+
+  // 1. TTS가 재생되기 전에 마이크와 Gemini WebSocket 연결을 먼저 완전히 끊어 하울링/역입력을 100% 차단
+  stopMicrophone();
+  const closingWs1 = ws1;
+  const closingWs2 = ws2;
+  ws1 = null;
+  ws2 = null;
+  isReady1 = false;
+  isReady2 = false;
+  turnActive1 = false;
+  turnActive2 = false;
+  if (closingWs1) { try { closingWs1.close(1000, "Single sentence completed"); } catch {} }
+  if (closingWs2) { try { closingWs2.close(1000, "Single sentence completed"); } catch {} }
+
+  clearInterval(timerHandle);
+  timerHandle = null;
+  stopBtn.disabled = true;
+  startBtn.disabled = false;
+
+  // 2. 화면에 해당 1문장만 깔끔하게 확정 표시
+  if (sFinal) updatePanel(sourceText, sFinal);
+  if (t1Final) updatePanel(target1Text, t1Final);
+  if (t2Final) updatePanel(target2Text, t2Final);
+
+  // 3. 번역 기록(히스토리)에 1회만 추가
+  addHistory(sFinal, t1Final, t2Final, LANG_CONFIGS[selectedLang]);
+
+  // 4. 마이크/소켓이 이미 완전히 끊긴 상태에서 청취자 화면(TTS)으로 완성된 1문장 전송
+  emitListenerEvent({
+    type: "sentence_commit",
+    sourceLang: selectedLang,
+    sourceSentence: sFinal,
+    fullSource: sFinal,
+    target1Lang: LANG_CONFIGS[selectedLang].target1.code,
+    target1Sentence: t1Final,
+    fullTarget1: t1Final,
+    target2Lang: LANG_CONFIGS[selectedLang].target2.code,
+    target2Sentence: t2Final,
+    fullTarget2: t2Final,
+    timestamp: Date.now()
+  });
+
+  emitListenerEvent({
+    type: "session_status",
+    status: "idle",
+  });
+
+  setStatus("✅ 1문장 번역 완료 (마이크 자동 끊김 · 하울링 차단됨)", "idle");
+}
+
 /* ─── Microphone ─── */
 async function startMicrophone() {
   const selectedMicId = micSelect?.value || undefined;
@@ -787,13 +903,62 @@ async function startMicrophone() {
 
   processorNode = audioContext.createScriptProcessor(4096, 1, 1);
   processorNode.onaudioprocess = (event) => {
-    if (!isReady1 && !isReady2) return;
+    if ((!isReady1 && !isReady2) || hasCommittedSentence) return;
 
     const input = event.inputBuffer.getChannelData(0);
     const mono16k =
       audioContext.sampleRate === 16000
         ? input
         : resampleLinear(input, audioContext.sampleRate, 16000);
+
+    // 마이크가 잠긴 상태(1문장 발화 직후 번역 대기 중)에는 순수 무음(0)만 전송하여
+    // Gemini가 즉시 문장 번역을 끝내게 하고 외부 소리/하울링 유입을 원천 차단
+    if (sentenceMicLocked || isTtsPlayingOnListener) {
+      const silentPcm = new Int16Array(mono16k.length);
+      const silentData = base64FromBytes(new Uint8Array(silentPcm.buffer));
+      const silentPayload = JSON.stringify({
+        realtimeInput: {
+          audio: { data: silentData, mimeType: "audio/pcm;rate=16000" },
+        },
+      });
+      if (ws1 && ws1.readyState === WebSocket.OPEN && isReady1) {
+        try { ws1.send(silentPayload); } catch {}
+      }
+      if (ws2 && ws2.readyState === WebSocket.OPEN && isReady2) {
+        try { ws2.send(silentPayload); } catch {}
+      }
+      return;
+    }
+
+    // 음성 에너지(RMS) 측정으로 한 문장 발화 시작 및 종료(침묵) 감지
+    let sumSq = 0;
+    for (let i = 0; i < mono16k.length; i++) {
+      sumSq += mono16k[i] * mono16k[i];
+    }
+    const rms = Math.sqrt(sumSq / mono16k.length);
+    const now = Date.now();
+
+    if (rms >= 0.015) {
+      if (!voiceDetectedInSentence) {
+        voiceDetectedInSentence = true;
+        voiceStartAt = now;
+      }
+      lastVoiceAt = now;
+    } else if (voiceDetectedInSentence && lastVoiceAt > 0) {
+      const spokenDuration = lastVoiceAt - voiceStartAt;
+      const silenceDuration = now - lastVoiceAt;
+      const hasRecognizedText = currentSource.trim().length >= 2;
+
+      // 한 문장 발화 후 짧은 침묵(0.55초~0.75초)이 감지되면 즉시 마이크 입력을 끊고 해당 문장만 번역 확정
+      if (
+        (hasRecognizedText && silenceDuration >= 550) ||
+        (spokenDuration >= 300 && silenceDuration >= 750)
+      ) {
+        lockMicrophoneForSingleSentence();
+        return;
+      }
+    }
+
     const pcm16 = float32ToInt16(mono16k);
     const data = base64FromBytes(new Uint8Array(pcm16.buffer));
 
@@ -831,59 +996,34 @@ function stopMicrophone() {
   if (audioContext) { audioContext.close(); audioContext = null; }
 }
 
-/* ─── Schedule Turn Commit ─── */
-function scheduleTurnCommit() {
-  if (commitTimeout) clearTimeout(commitTimeout);
-  commitTimeout = setTimeout(() => {
-    // 히스토리에는 최근 발화된 문장을 추가 (전체 누적 텍스트 중복 방지)
-    const getLastLine = (txt) => {
-      const parts = txt.trim().split("\n").filter(Boolean);
-      return parts.length > 0 ? parts[parts.length - 1] : "";
-    };
-
-    const sLast = getLastLine(currentSource);
-    const t1Last = getLastLine(currentTarget1);
-    const t2Last = getLastLine(currentTarget2);
-
-    if (sLast || t1Last || t2Last) {
-      addHistory(sLast, t1Last, t2Last, LANG_CONFIGS[selectedLang]);
-      // 청취자 화면에 완성된 문장 전송 (TTS 발화용 sentence 및 누적 fullText)
-      emitListenerEvent({
-        type: "sentence_commit",
-        sourceLang: selectedLang,
-        sourceSentence: sLast,
-        fullSource: currentSource,
-        target1Lang: LANG_CONFIGS[selectedLang].target1.code,
-        target1Sentence: t1Last,
-        fullTarget1: currentTarget1,
-        target2Lang: LANG_CONFIGS[selectedLang].target2.code,
-        target2Sentence: t2Last,
-        fullTarget2: currentTarget2,
-        timestamp: Date.now()
-      });
-    }
-    turnActive1 = false;
-    turnActive2 = false;
-  }, 1400);
-}
-
-/* ─── Start Dual Live Translation Session ─── */
+/* ─── Start Dual Live Translation Session (1-Sentence Clean Cut Mode) ─── */
 async function start() {
   if (ws1 || ws2) return;
 
   try {
+    // 새 문장 발화 시작 전, 청취자 화면에서 재생 중인 TTS가 있다면 즉시 중지시켜 하울링 방지
+    isTtsPlayingOnListener = false;
+    emitListenerEvent({ type: "stop_tts" });
+
     setStatus("연결 준비 중...", "idle");
     startBtn.disabled = true;
 
     const config = LANG_CONFIGS[selectedLang];
 
-    // 서버 프록시(/ws/gemini)를 통해 Gemini Live에 연결
+    // 서버 프록시(/ws/gemini) 또는 클라우드 직접 연결
     const wsUrl = await getGeminiProxyUrl();
 
     turnActive1 = false;
     turnActive2 = false;
     isReady1 = false;
     isReady2 = false;
+    sentenceMicLocked = false;
+    hasCommittedSentence = false;
+    ws1TurnDone = false;
+    ws2TurnDone = false;
+    voiceDetectedInSentence = false;
+    voiceStartAt = 0;
+    lastVoiceAt = 0;
     currentSource = "";
     currentTarget1 = "";
     currentTarget2 = "";
@@ -914,6 +1054,7 @@ async function start() {
     };
 
     ws1.onmessage = async (event) => {
+      if (hasCommittedSentence) return;
       const raw = typeof event.data === "string" ? event.data : await event.data.text();
       let msg;
       try { msg = JSON.parse(raw); } catch { return; }
@@ -928,46 +1069,45 @@ async function start() {
       const content = msg.serverContent;
       if (!content) return;
 
-      if (!turnActive1 && (content.inputTranscription?.text || content.outputTranscription?.text)) {
-        currentSource = appendTurnBreak(currentSource);
-        currentTarget1 = appendTurnBreak(currentTarget1);
-        turnActive1 = true;
-      }
-
-      // Recognized original speech
-      if (content.inputTranscription?.text) {
+      // 1문장 원문 음성 인식 (WS1 턴이 완료되기 전까지만 반영하여 다른 말로 변하는 현상 방지)
+      if (content.inputTranscription?.text && !ws1TurnDone) {
         currentSource += content.inputTranscription.text;
         updatePanel(sourceText, currentSource);
         emitThrottledStreamUpdate();
-        scheduleTurnCommit();
+        if (sentenceMicLocked) {
+          scheduleSingleSentenceFinalize(650);
+        }
       }
 
-      // Target 1 translation
+      // Target 1 번역문 (outputTranscription만 사용하여 모델 내부 텍스트 혼입 차단)
       if (content.outputTranscription?.text) {
         currentTarget1 += content.outputTranscription.text;
         updatePanel(target1Text, currentTarget1);
         emitThrottledStreamUpdate();
-        scheduleTurnCommit();
-      } else if (content.modelTurn?.parts) {
-        for (const p of content.modelTurn.parts) {
-          if (p.text) {
-            currentTarget1 += p.text;
-            updatePanel(target1Text, currentTarget1);
-            emitThrottledStreamUpdate();
-            scheduleTurnCommit();
-          }
+
+        // 번역 출력이 시작되었고 사용자가 말을 멈춘 상태라면 즉시 마이크 잠금
+        if (!sentenceMicLocked && lastVoiceAt > 0 && Date.now() - lastVoiceAt >= 380) {
+          lockMicrophoneForSingleSentence();
+        } else if (sentenceMicLocked) {
+          scheduleSingleSentenceFinalize(ws2TurnDone ? 250 : 650);
         }
       }
 
       if (content.turnComplete) {
-        scheduleTurnCommit();
+        ws1TurnDone = true;
+        lockMicrophoneForSingleSentence();
+        if (ws2TurnDone || currentTarget2.trim().length > 0) {
+          scheduleSingleSentenceFinalize(200);
+        } else {
+          scheduleSingleSentenceFinalize(650);
+        }
       }
     };
 
     ws1.onerror = (e) => console.error("WS1 오류:", e);
     ws1.onclose = (e) => {
       console.log("WS1 종료:", e.code, e.reason);
-      if (e.code !== 1000) {
+      if (e.code !== 1000 && !hasCommittedSentence) {
         if (!isReady1) {
           _cachedApiKey = null;
           try { localStorage.removeItem("kv_gemini_api_key"); } catch (_) {}
@@ -1000,6 +1140,7 @@ async function start() {
     };
 
     ws2.onmessage = async (event) => {
+      if (hasCommittedSentence) return;
       const raw = typeof event.data === "string" ? event.data : await event.data.text();
       let msg;
       try { msg = JSON.parse(raw); } catch { return; }
@@ -1014,44 +1155,41 @@ async function start() {
       const content = msg.serverContent;
       if (!content) return;
 
-      if (!turnActive2 && content.outputTranscription?.text) {
-        currentTarget2 = appendTurnBreak(currentTarget2);
-        turnActive2 = true;
-      }
-
-      // Target 2 translation
+      // Target 2 번역문 (outputTranscription만 사용)
       if (content.outputTranscription?.text) {
         currentTarget2 += content.outputTranscription.text;
         updatePanel(target2Text, currentTarget2);
         emitThrottledStreamUpdate();
-        scheduleTurnCommit();
-      } else if (content.modelTurn?.parts) {
-        for (const p of content.modelTurn.parts) {
-          if (p.text) {
-            currentTarget2 += p.text;
-            updatePanel(target2Text, currentTarget2);
-            emitThrottledStreamUpdate();
-            scheduleTurnCommit();
-          }
+
+        if (!sentenceMicLocked && lastVoiceAt > 0 && Date.now() - lastVoiceAt >= 380) {
+          lockMicrophoneForSingleSentence();
+        } else if (sentenceMicLocked) {
+          scheduleSingleSentenceFinalize(ws1TurnDone ? 250 : 650);
         }
       }
 
       if (content.turnComplete) {
-        scheduleTurnCommit();
+        ws2TurnDone = true;
+        lockMicrophoneForSingleSentence();
+        if (ws1TurnDone || currentTarget1.trim().length > 0) {
+          scheduleSingleSentenceFinalize(200);
+        } else {
+          scheduleSingleSentenceFinalize(650);
+        }
       }
     };
 
     ws2.onerror = (e) => console.error("WS2 오류:", e);
     ws2.onclose = (e) => {
       console.log("WS2 종료:", e.code, e.reason);
-      if (e.code !== 1000 && (ws1 || ws2)) {
+      if (e.code !== 1000 && !hasCommittedSentence && (ws1 || ws2)) {
         setStatus(`WS2 연결 끊김 (${e.code})`, "error");
       }
     };
 
     async function checkAllReady() {
       if (isReady1 && isReady2 && !mediaStream) {
-        setStatus(`🎤 번역 중 (${config.flag} → ${config.target1.flag} · ${config.target2.flag})`, "live");
+        setStatus(`🎤 1문장 말씀하세요 (${config.flag} → ${config.target1.flag} · ${config.target2.flag})`, "live");
         stopBtn.disabled = false;
         startedAt = Date.now();
         timerHandle = setInterval(updateTimer, 1000);
@@ -1082,8 +1220,10 @@ function stop() {
     commitTimeout = null;
   }
 
-  if (currentSource.trim() || currentTarget1.trim() || currentTarget2.trim()) {
-    addHistory(currentSource, currentTarget1, currentTarget2, LANG_CONFIGS[selectedLang]);
+  // 아직 확정되지 않은 텍스트가 있으면 1문장으로 확정 처리
+  if (!hasCommittedSentence && (currentSource.trim() || currentTarget1.trim() || currentTarget2.trim())) {
+    finalizeSingleSentence();
+    return;
   }
 
   stopMicrophone();
@@ -1095,6 +1235,7 @@ function stop() {
   isReady2 = false;
   turnActive1 = false;
   turnActive2 = false;
+  sentenceMicLocked = false;
   stopBtn.disabled = true;
   startBtn.disabled = false;
 
