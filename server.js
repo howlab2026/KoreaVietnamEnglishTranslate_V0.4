@@ -347,17 +347,32 @@ if (!IS_VERCEL) {
     }
 
     ws.on("message", (data, isBinary) => {
-      if (!ws.isSpeaker) return;
-      if (!isBinary) {
-        try {
-          const parsed = JSON.parse(data.toString());
-          if (parsed?.type === "sentence_commit") lastCommitPayload = parsed;
-          else if (parsed?.type === "clear") lastCommitPayload = null;
-        } catch (_) {}
+      if (isBinary) return;
+      let parsed;
+      try {
+        parsed = JSON.parse(data.toString());
+      } catch (_) {
+        return;
       }
+
+      // 청취자(Listener)가 보낸 TTS 재생 상태(tts_status)는 화자(Speaker)에게 전달하여 하울링 방지
+      if (!ws.isSpeaker) {
+        if (parsed?.type === "tts_status") {
+          broadcastWss.clients.forEach((client) => {
+            if (client !== ws && client.isSpeaker && client.readyState === WebSocket.OPEN) {
+              client.send(data, { binary: false });
+            }
+          });
+        }
+        return;
+      }
+
+      if (parsed?.type === "sentence_commit") lastCommitPayload = parsed;
+      else if (parsed?.type === "clear") lastCommitPayload = null;
+
       broadcastWss.clients.forEach((client) => {
         if (client !== ws && client.readyState === WebSocket.OPEN) {
-          client.send(data, { binary: isBinary });
+          client.send(data, { binary: false });
         }
       });
     });

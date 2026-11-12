@@ -227,13 +227,20 @@ let timerHandle = null;
 let currentSource = "";
 let currentTarget1 = "";
 let currentTarget2 = "";
+let committedSourceLines = [];
+let committedTarget1Lines = [];
+let committedTarget2Lines = [];
 let turnActive1 = false;
 let turnActive2 = false;
 let commitTimeout = null;
+let ttsResumeTimeout = null;
+let ttsSafetyTimeout = null;
 
-// Single-Sentence Mode & Anti-Howling State
+// Continuous Session + Per-Sentence Lock & Anti-Howling State
+let sessionRunning = false;
 let sentenceMicLocked = false;
 let hasCommittedSentence = false;
+let isTtsGuardActive = false;
 let ws1TurnDone = false;
 let ws2TurnDone = false;
 let voiceDetectedInSentence = false;
@@ -245,16 +252,35 @@ let isTtsPlayingOnListener = false;
 const broadcastChannel = typeof BroadcastChannel !== "undefined" ? new BroadcastChannel("live_translation_stream") : null;
 let broadcastWs = null;
 
+function handleListenerTtsStatus(speaking) {
+  isTtsPlayingOnListener = Boolean(speaking);
+  if (!sessionRunning) return;
+
+  if (isTtsPlayingOnListener) {
+    // TTS 재생이 시작되면 자동 재개 타이머를 취소하고 마이크 잠금 유지
+    if (ttsResumeTimeout) {
+      clearTimeout(ttsResumeTimeout);
+      ttsResumeTimeout = null;
+    }
+    if (!sentenceMicLocked) {
+      lockMicrophoneForSingleSentence();
+    }
+    setStatus("🔇 TTS 음성 출력 중 (하울링 차단 · 끝나면 자동 이어말하기)", "live");
+  } else if (isTtsGuardActive || hasCommittedSentence) {
+    // TTS 재생이 끝났으므로 스피커 잔향 소멸(600ms) 후 자동으로 다음 문장 마이크 활성화
+    if (ttsResumeTimeout) clearTimeout(ttsResumeTimeout);
+    ttsResumeTimeout = setTimeout(() => {
+      resumeNextSentenceTurn();
+    }, 600);
+  }
+}
+
 if (broadcastChannel) {
   broadcastChannel.onmessage = (e) => {
     const data = e.data;
     if (!data || typeof data !== "object") return;
     if (data.type === "tts_status") {
-      isTtsPlayingOnListener = Boolean(data.speaking);
-      // TTS가 재생되기 시작하면 마이크가 열려 있을 경우 즉시 차단하여 하울링 원천 방지
-      if (isTtsPlayingOnListener && (ws1 || ws2) && !sentenceMicLocked) {
-        lockMicrophoneForSingleSentence();
-      }
+      handleListenerTtsStatus(data.speaking);
     }
   };
 }
@@ -319,7 +345,7 @@ async function connectBroadcastWs() {
       // Send current state immediately
       emitListenerEvent({
         type: "session_status",
-        status: ws1 || ws2 ? "live" : "idle",
+        status: sessionRunning ? "live" : "idle",
         sourceLang: selectedLang,
         target1Lang: LANG_CONFIGS[selectedLang]?.target1.code,
         target2Lang: LANG_CONFIGS[selectedLang]?.target2.code,
@@ -327,6 +353,14 @@ async function connectBroadcastWs() {
         currentTarget1,
         currentTarget2,
       });
+    };
+    broadcastWs.onmessage = (e) => {
+      try {
+        const data = JSON.parse(e.data);
+        if (data?.type === "tts_status") {
+          handleListenerTtsStatus(data.speaking);
+        }
+      } catch (_) {}
     };
     broadcastWs.onclose = () => {
       // 연결 자체가 거부된 경우(토큰 오류) 다시 입력받도록 토큰 초기화
@@ -493,6 +527,9 @@ function setLanguage(langKey) {
   currentSource = "";
   currentTarget1 = "";
   currentTarget2 = "";
+  committedSourceLines = [];
+  committedTarget1Lines = [];
+  committedTarget2Lines = [];
   turnActive1 = false;
   turnActive2 = false;
 
@@ -782,7 +819,24 @@ async function getGeminiProxyUrl() {
   return `${WS_PROTO}//${location.host}/ws/gemini?token=${encodeURIComponent(speakerToken)}`;
 }
 
-/* ─── Single-Sentence Lock & Auto Cut-Off (하울링 및 다른 말 유입 원천 차단) ─── */
+/* ─── Single-Sentence Turn Lock & Auto-Resume (연속 번역 유지 + 하울링 원천 차단) ─── */
+function buildDisplayText(committedArr, activeSentence) {
+  const lines = [...committedArr];
+  const cleanActive = (activeSentence || "").replace(/\s+/g, " ").trim();
+  if (cleanActive) lines.push(cleanActive);
+  return lines.join("\n");
+}
+
+function refreshAllPanels() {
+  const sDisplay = buildDisplayText(committedSourceLines, currentSource);
+  const t1Display = buildDisplayText(committedTarget1Lines, currentTarget1);
+  const t2Display = buildDisplayText(committedTarget2Lines, currentTarget2);
+
+  if (sDisplay) updatePanel(sourceText, sDisplay);
+  if (t1Display) updatePanel(target1Text, t1Display);
+  if (t2Display) updatePanel(target2Text, t2Display);
+}
+
 function lockMicrophoneForSingleSentence() {
   if (sentenceMicLocked || hasCommittedSentence) return;
   sentenceMicLocked = true;
@@ -795,16 +849,51 @@ function lockMicrophoneForSingleSentence() {
   }
   if (micMeterBar) micMeterBar.style.width = "0%";
 
-  setStatus("🔒 1문장 입력 완료 — 번역 확정 중 (마이크 차단됨)", "live");
-  scheduleSingleSentenceFinalize(1100);
+  setStatus("🔒 문장 번역 확정 중... (하울링 방지 마이크 일시 차단)", "live");
+  scheduleSingleSentenceFinalize(1000);
 }
 
-function scheduleSingleSentenceFinalize(delayMs = 600) {
+function scheduleSingleSentenceFinalize(delayMs = 550) {
   if (hasCommittedSentence) return;
   if (commitTimeout) clearTimeout(commitTimeout);
   commitTimeout = setTimeout(() => {
     finalizeSingleSentence();
   }, delayMs);
+}
+
+function resumeNextSentenceTurn() {
+  if (!sessionRunning) return;
+
+  if (ttsResumeTimeout) {
+    clearTimeout(ttsResumeTimeout);
+    ttsResumeTimeout = null;
+  }
+  if (ttsSafetyTimeout) {
+    clearTimeout(ttsSafetyTimeout);
+    ttsSafetyTimeout = null;
+  }
+
+  currentSource = "";
+  currentTarget1 = "";
+  currentTarget2 = "";
+  sentenceMicLocked = false;
+  hasCommittedSentence = false;
+  isTtsGuardActive = false;
+  ws1TurnDone = false;
+  ws2TurnDone = false;
+  voiceDetectedInSentence = false;
+  voiceStartAt = 0;
+  lastVoiceAt = 0;
+
+  // 마이크 트랙 다시 활성화 (번역 시작 버튼을 다시 누를 필요 없이 즉시 다음 문장 대기)
+  if (mediaStream) {
+    mediaStream.getAudioTracks().forEach((track) => {
+      track.enabled = true;
+    });
+  }
+
+  const config = LANG_CONFIGS[selectedLang];
+  setStatus(`🎤 번역 중 — 다음 문장을 말씀하세요 (${config.flag} → ${config.target1.flag} · ${config.target2.flag})`, "live");
 }
 
 function finalizeSingleSentence() {
@@ -814,63 +903,86 @@ function finalizeSingleSentence() {
   const t1Final = currentTarget1.replace(/\s+/g, " ").trim();
   const t2Final = currentTarget2.replace(/\s+/g, " ").trim();
 
-  if (!sFinal && !t1Final && !t2Final) return;
+  if (!sFinal && !t1Final && !t2Final) {
+    // 인식된 문장이 없으면 바로 다음 문장 대기 상태로 복귀
+    resumeNextSentenceTurn();
+    return;
+  }
 
   hasCommittedSentence = true;
   sentenceMicLocked = true;
+  isTtsGuardActive = true;
 
   if (commitTimeout) {
     clearTimeout(commitTimeout);
     commitTimeout = null;
   }
 
-  // 1. TTS가 재생되기 전에 마이크와 Gemini WebSocket 연결을 먼저 완전히 끊어 하울링/역입력을 100% 차단
-  stopMicrophone();
-  const closingWs1 = ws1;
-  const closingWs2 = ws2;
-  ws1 = null;
-  ws2 = null;
-  isReady1 = false;
-  isReady2 = false;
-  turnActive1 = false;
-  turnActive2 = false;
-  if (closingWs1) { try { closingWs1.close(1000, "Single sentence completed"); } catch {} }
-  if (closingWs2) { try { closingWs2.close(1000, "Single sentence completed"); } catch {} }
+  // 1. 마이크 하드웨어 트랙을 확실히 잠근 상태에서 완성된 문장을 확정 목록에 고정 (절대 다른 말로 변하지 않음)
+  if (mediaStream) {
+    mediaStream.getAudioTracks().forEach((track) => {
+      track.enabled = false;
+    });
+  }
+  if (micMeterBar) micMeterBar.style.width = "0%";
 
-  clearInterval(timerHandle);
-  timerHandle = null;
-  stopBtn.disabled = true;
-  startBtn.disabled = false;
+  if (sFinal) {
+    committedSourceLines.push(sFinal);
+    if (committedSourceLines.length > 15) committedSourceLines.shift();
+  }
+  if (t1Final) {
+    committedTarget1Lines.push(t1Final);
+    if (committedTarget1Lines.length > 15) committedTarget1Lines.shift();
+  }
+  if (t2Final) {
+    committedTarget2Lines.push(t2Final);
+    if (committedTarget2Lines.length > 15) committedTarget2Lines.shift();
+  }
 
-  // 2. 화면에 해당 1문장만 깔끔하게 확정 표시
-  if (sFinal) updatePanel(sourceText, sFinal);
-  if (t1Final) updatePanel(target1Text, t1Final);
-  if (t2Final) updatePanel(target2Text, t2Final);
+  // 현재 턴 버퍼 즉시 초기화 (이전 문장이 수정되는 현상 원천 차단)
+  currentSource = "";
+  currentTarget1 = "";
+  currentTarget2 = "";
 
-  // 3. 번역 기록(히스토리)에 1회만 추가
+  // 2. 화면 패널 및 번역 기록(히스토리) 갱신
+  refreshAllPanels();
   addHistory(sFinal, t1Final, t2Final, LANG_CONFIGS[selectedLang]);
 
-  // 4. 마이크/소켓이 이미 완전히 끊긴 상태에서 청취자 화면(TTS)으로 완성된 1문장 전송
+  // 3. 청취자 화면(TTS)으로 완성된 1문장 전송
   emitListenerEvent({
     type: "sentence_commit",
     sourceLang: selectedLang,
     sourceSentence: sFinal,
-    fullSource: sFinal,
+    fullSource: committedSourceLines.join("\n"),
     target1Lang: LANG_CONFIGS[selectedLang].target1.code,
     target1Sentence: t1Final,
-    fullTarget1: t1Final,
+    fullTarget1: committedTarget1Lines.join("\n"),
     target2Lang: LANG_CONFIGS[selectedLang].target2.code,
     target2Sentence: t2Final,
-    fullTarget2: t2Final,
+    fullTarget2: committedTarget2Lines.join("\n"),
     timestamp: Date.now()
   });
 
-  emitListenerEvent({
-    type: "session_status",
-    status: "idle",
-  });
+  if (!sessionRunning) return;
 
-  setStatus("✅ 1문장 번역 완료 (마이크 자동 끊김 · 하울링 차단됨)", "idle");
+  setStatus("🔇 문장 확정 완료 (TTS 하울링 차단 중 · 잠시 후 자동 마이크 켜짐)", "live");
+
+  // 4. 청취자 화면에서 TTS가 실행되지 않는 경우에도 850ms 후 자동으로 마이크를 다시 켜서 계속 말할 수 있게 함
+  //    (만약 청취자 화면에서 TTS가 시작되면 handleListenerTtsStatus가 이 타이머를 취소하고 TTS 종료 시점에 재개함)
+  if (ttsResumeTimeout) clearTimeout(ttsResumeTimeout);
+  ttsResumeTimeout = setTimeout(() => {
+    if (!isTtsPlayingOnListener) {
+      resumeNextSentenceTurn();
+    }
+  }, 850);
+
+  // 안전 타이머: TTS 종료 신호가 누락되더라도 최대 대기 시간 후 자동으로 마이크 재개
+  const maxWaitMs = Math.min(10000, Math.max(3000, Math.max(t1Final.length, t2Final.length) * 120));
+  if (ttsSafetyTimeout) clearTimeout(ttsSafetyTimeout);
+  ttsSafetyTimeout = setTimeout(() => {
+    isTtsPlayingOnListener = false;
+    resumeNextSentenceTurn();
+  }, maxWaitMs);
 }
 
 /* ─── Microphone ─── */
@@ -903,7 +1015,7 @@ async function startMicrophone() {
 
   processorNode = audioContext.createScriptProcessor(4096, 1, 1);
   processorNode.onaudioprocess = (event) => {
-    if ((!isReady1 && !isReady2) || hasCommittedSentence) return;
+    if (!isReady1 && !isReady2) return;
 
     const input = event.inputBuffer.getChannelData(0);
     const mono16k =
@@ -911,9 +1023,9 @@ async function startMicrophone() {
         ? input
         : resampleLinear(input, audioContext.sampleRate, 16000);
 
-    // 마이크가 잠긴 상태(1문장 발화 직후 번역 대기 중)에는 순수 무음(0)만 전송하여
-    // Gemini가 즉시 문장 번역을 끝내게 하고 외부 소리/하울링 유입을 원천 차단
-    if (sentenceMicLocked || isTtsPlayingOnListener) {
+    // 마이크가 잠긴 상태(1문장 발화 직후 번역 확정 대기 또는 TTS 재생 중)에는
+    // 순수 무음(0)만 전송하여 Gemini가 즉시 문장 번역을 끝내게 하고 외부 소리/하울링 유입을 원천 차단
+    if (sentenceMicLocked || isTtsPlayingOnListener || isTtsGuardActive || hasCommittedSentence) {
       const silentPcm = new Int16Array(mono16k.length);
       const silentData = base64FromBytes(new Uint8Array(silentPcm.buffer));
       const silentPayload = JSON.stringify({
@@ -996,12 +1108,12 @@ function stopMicrophone() {
   if (audioContext) { audioContext.close(); audioContext = null; }
 }
 
-/* ─── Start Dual Live Translation Session (1-Sentence Clean Cut Mode) ─── */
+/* ─── Start Dual Live Translation Session (Continuous + Per-Sentence Clean Cut) ─── */
 async function start() {
   if (ws1 || ws2) return;
 
   try {
-    // 새 문장 발화 시작 전, 청취자 화면에서 재생 중인 TTS가 있다면 즉시 중지시켜 하울링 방지
+    sessionRunning = true;
     isTtsPlayingOnListener = false;
     emitListenerEvent({ type: "stop_tts" });
 
@@ -1019,6 +1131,7 @@ async function start() {
     isReady2 = false;
     sentenceMicLocked = false;
     hasCommittedSentence = false;
+    isTtsGuardActive = false;
     ws1TurnDone = false;
     ws2TurnDone = false;
     voiceDetectedInSentence = false;
@@ -1028,9 +1141,9 @@ async function start() {
     currentTarget1 = "";
     currentTarget2 = "";
 
-    sourceText.textContent = "...";
-    target1Text.textContent = "...";
-    target2Text.textContent = "...";
+    if (committedSourceLines.length === 0) sourceText.textContent = "...";
+    if (committedTarget1Lines.length === 0) target1Text.textContent = "...";
+    if (committedTarget2Lines.length === 0) target2Text.textContent = "...";
 
     // Setup 1 (Target 1 + Input Audio Transcription)
     ws1 = new WebSocket(wsUrl);
@@ -1054,7 +1167,7 @@ async function start() {
     };
 
     ws1.onmessage = async (event) => {
-      if (hasCommittedSentence) return;
+      if (hasCommittedSentence || isTtsGuardActive) return;
       const raw = typeof event.data === "string" ? event.data : await event.data.text();
       let msg;
       try { msg = JSON.parse(raw); } catch { return; }
@@ -1072,24 +1185,24 @@ async function start() {
       // 1문장 원문 음성 인식 (WS1 턴이 완료되기 전까지만 반영하여 다른 말로 변하는 현상 방지)
       if (content.inputTranscription?.text && !ws1TurnDone) {
         currentSource += content.inputTranscription.text;
-        updatePanel(sourceText, currentSource);
+        refreshAllPanels();
         emitThrottledStreamUpdate();
         if (sentenceMicLocked) {
-          scheduleSingleSentenceFinalize(650);
+          scheduleSingleSentenceFinalize(600);
         }
       }
 
       // Target 1 번역문 (outputTranscription만 사용하여 모델 내부 텍스트 혼입 차단)
       if (content.outputTranscription?.text) {
         currentTarget1 += content.outputTranscription.text;
-        updatePanel(target1Text, currentTarget1);
+        refreshAllPanels();
         emitThrottledStreamUpdate();
 
         // 번역 출력이 시작되었고 사용자가 말을 멈춘 상태라면 즉시 마이크 잠금
         if (!sentenceMicLocked && lastVoiceAt > 0 && Date.now() - lastVoiceAt >= 380) {
           lockMicrophoneForSingleSentence();
         } else if (sentenceMicLocked) {
-          scheduleSingleSentenceFinalize(ws2TurnDone ? 250 : 650);
+          scheduleSingleSentenceFinalize(ws2TurnDone ? 220 : 600);
         }
       }
 
@@ -1097,9 +1210,9 @@ async function start() {
         ws1TurnDone = true;
         lockMicrophoneForSingleSentence();
         if (ws2TurnDone || currentTarget2.trim().length > 0) {
-          scheduleSingleSentenceFinalize(200);
+          scheduleSingleSentenceFinalize(180);
         } else {
-          scheduleSingleSentenceFinalize(650);
+          scheduleSingleSentenceFinalize(600);
         }
       }
     };
@@ -1107,13 +1220,13 @@ async function start() {
     ws1.onerror = (e) => console.error("WS1 오류:", e);
     ws1.onclose = (e) => {
       console.log("WS1 종료:", e.code, e.reason);
-      if (e.code !== 1000 && !hasCommittedSentence) {
+      if (e.code !== 1000 && sessionRunning) {
         if (!isReady1) {
           _cachedApiKey = null;
           try { localStorage.removeItem("kv_gemini_api_key"); } catch (_) {}
           startBtn.disabled = false;
-        }
-        if (ws1 || ws2) {
+          sessionRunning = false;
+        } else if (ws1 || ws2) {
           setStatus(`WS1 연결 끊김 (${e.code})`, "error");
         }
       }
@@ -1140,7 +1253,7 @@ async function start() {
     };
 
     ws2.onmessage = async (event) => {
-      if (hasCommittedSentence) return;
+      if (hasCommittedSentence || isTtsGuardActive) return;
       const raw = typeof event.data === "string" ? event.data : await event.data.text();
       let msg;
       try { msg = JSON.parse(raw); } catch { return; }
@@ -1158,13 +1271,13 @@ async function start() {
       // Target 2 번역문 (outputTranscription만 사용)
       if (content.outputTranscription?.text) {
         currentTarget2 += content.outputTranscription.text;
-        updatePanel(target2Text, currentTarget2);
+        refreshAllPanels();
         emitThrottledStreamUpdate();
 
         if (!sentenceMicLocked && lastVoiceAt > 0 && Date.now() - lastVoiceAt >= 380) {
           lockMicrophoneForSingleSentence();
         } else if (sentenceMicLocked) {
-          scheduleSingleSentenceFinalize(ws1TurnDone ? 250 : 650);
+          scheduleSingleSentenceFinalize(ws1TurnDone ? 220 : 600);
         }
       }
 
@@ -1172,9 +1285,9 @@ async function start() {
         ws2TurnDone = true;
         lockMicrophoneForSingleSentence();
         if (ws1TurnDone || currentTarget1.trim().length > 0) {
-          scheduleSingleSentenceFinalize(200);
+          scheduleSingleSentenceFinalize(180);
         } else {
-          scheduleSingleSentenceFinalize(650);
+          scheduleSingleSentenceFinalize(600);
         }
       }
     };
@@ -1182,14 +1295,14 @@ async function start() {
     ws2.onerror = (e) => console.error("WS2 오류:", e);
     ws2.onclose = (e) => {
       console.log("WS2 종료:", e.code, e.reason);
-      if (e.code !== 1000 && !hasCommittedSentence && (ws1 || ws2)) {
+      if (e.code !== 1000 && sessionRunning && (ws1 || ws2)) {
         setStatus(`WS2 연결 끊김 (${e.code})`, "error");
       }
     };
 
     async function checkAllReady() {
       if (isReady1 && isReady2 && !mediaStream) {
-        setStatus(`🎤 1문장 말씀하세요 (${config.flag} → ${config.target1.flag} · ${config.target2.flag})`, "live");
+        setStatus(`🎤 번역 중 — 말씀하세요 (${config.flag} → ${config.target1.flag} · ${config.target2.flag})`, "live");
         stopBtn.disabled = false;
         startedAt = Date.now();
         timerHandle = setInterval(updateTimer, 1000);
@@ -1208,6 +1321,7 @@ async function start() {
   } catch (error) {
     console.error("세션 시작 실패:", error);
     setStatus(`오류: ${error.message}`, "error");
+    sessionRunning = false;
     startBtn.disabled = false;
     stop();
   }
@@ -1215,27 +1329,38 @@ async function start() {
 
 /* ─── Stop Session ─── */
 function stop() {
+  sessionRunning = false;
+
   if (commitTimeout) {
     clearTimeout(commitTimeout);
     commitTimeout = null;
   }
+  if (ttsResumeTimeout) {
+    clearTimeout(ttsResumeTimeout);
+    ttsResumeTimeout = null;
+  }
+  if (ttsSafetyTimeout) {
+    clearTimeout(ttsSafetyTimeout);
+    ttsSafetyTimeout = null;
+  }
 
-  // 아직 확정되지 않은 텍스트가 있으면 1문장으로 확정 처리
+  // 아직 확정되지 않은 텍스트가 있으면 마지막 문장으로 확정 처리
   if (!hasCommittedSentence && (currentSource.trim() || currentTarget1.trim() || currentTarget2.trim())) {
     finalizeSingleSentence();
-    return;
   }
 
   stopMicrophone();
 
-  if (ws1) { try { ws1.close(); } catch {} ws1 = null; }
-  if (ws2) { try { ws2.close(); } catch {} ws2 = null; }
+  if (ws1) { try { ws1.close(1000, "User stopped"); } catch {} ws1 = null; }
+  if (ws2) { try { ws2.close(1000, "User stopped"); } catch {} ws2 = null; }
 
   isReady1 = false;
   isReady2 = false;
   turnActive1 = false;
   turnActive2 = false;
   sentenceMicLocked = false;
+  hasCommittedSentence = false;
+  isTtsGuardActive = false;
   stopBtn.disabled = true;
   startBtn.disabled = false;
 
@@ -1265,6 +1390,9 @@ clearBtn.addEventListener("click", () => {
   currentSource = "";
   currentTarget1 = "";
   currentTarget2 = "";
+  committedSourceLines = [];
+  committedTarget1Lines = [];
+  committedTarget2Lines = [];
   turnActive1 = false;
   turnActive2 = false;
 

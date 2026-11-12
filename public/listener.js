@@ -102,12 +102,19 @@ let lastCommitKey = "";
 let currentSentenceText = "";
 let currentSourceSentence = "";
 let historySentences = []; // 이전까지의 대화 문장들 (번역 단위별 보관)
+let listenerWs = null;
 const listenerBroadcastChannel = typeof BroadcastChannel !== "undefined" ? new BroadcastChannel("live_translation_stream") : null;
 
 function notifySpeakerTtsStatus(speaking) {
+  const payload = { type: "tts_status", speaking: Boolean(speaking) };
   try {
     if (listenerBroadcastChannel) {
-      listenerBroadcastChannel.postMessage({ type: "tts_status", speaking: Boolean(speaking) });
+      listenerBroadcastChannel.postMessage(payload);
+    }
+  } catch (_) {}
+  try {
+    if (listenerWs && listenerWs.readyState === WebSocket.OPEN) {
+      listenerWs.send(JSON.stringify(payload));
     }
   } catch (_) {}
 }
@@ -290,6 +297,8 @@ function playNaturalSpeech(text, onEndedCallback) {
   }
 
   stopCurrentAudio();
+  isSpeaking = true;
+  updateSpeakingIndicator(true);
 
   const voice = getSelectedVoiceId();
   const speed = Number(ttsRate?.value || 1.0);
@@ -794,6 +803,7 @@ async function connectListenerWs() {
 
   try {
     ws = new WebSocket(wsUrl);
+    listenerWs = ws;
     ws.onopen = () => {
       console.log("🌐 Listener WebSocket 연결 완료");
       updateConnectionState("waiting", "원어민 발화 대기 중");
