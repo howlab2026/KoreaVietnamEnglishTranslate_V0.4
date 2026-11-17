@@ -498,58 +498,56 @@ function updateCurrentTranslationDisplay(sentence, source) {
 }
 
 /**
- * 하단 창: 이전까지의 대화문장 표시
- * 번역단위마다 한 줄을 띄워서(\n\n) 명확히 구분하고 가득 차면 자동 스크롤
+ * 하단 창: 직전문장 표시 (1개만 유지 · 현문장 1개와 함께 총 2문장 표시)
  */
+const MAX_PREV_SENTENCES = 1;
+let lastDisplayedCurrentSentence = "";
+
 function renderHistoryDisplay() {
   if (!liveTargetText) return;
   if (!historySentences || historySentences.length === 0) {
-    liveTargetText.textContent = "이전에 번역된 문장들이 여기에 번역 단위마다 줄을 띄워 쌓이며, 화면이 가득 차면 스크롤됩니다.";
-    if (historyLineCount) historyLineCount.textContent = "0문장";
+    liveTargetText.textContent = "바로 직전에 번역된 문장이 여기에 표시됩니다 (현문장 포함 총 2문장).";
+    if (historyLineCount) historyLineCount.textContent = `0 / ${MAX_PREV_SENTENCES}문장`;
     return;
   }
 
-  // 번역 단위마다 줄띄기를 해서 구분 (\n\n)
   liveTargetText.textContent = historySentences.join("\n\n");
-  if (historyLineCount) historyLineCount.textContent = `${historySentences.length}문장`;
+  if (historyLineCount) historyLineCount.textContent = `${historySentences.length} / ${MAX_PREV_SENTENCES}문장`;
 
-  // 화면이 가득 차면 아래로 스크롤하여 최근 대화가 보이도록 함
   requestAnimationFrame(() => {
     liveTargetText.scrollTop = liveTargetText.scrollHeight;
   });
 }
 
 /**
- * 새로운 번역 단위 문장이 완성되면 이전 대화 목록에 추가
+ * 새로운 번역 단위 문장이 완성되면 직전 현시점 문장을 이전 문장 목록(최대 5개)으로 이동하고
+ * 5개를 초과하면 가장 오래된 문장 1개를 제거
  */
 function appendHistorySentence(sentence) {
   if (!sentence || !sentence.trim()) return;
   const clean = sentence.trim();
-  // 직전 문장과 동일하면 중복 누적 방지
-  if (historySentences.length > 0 && historySentences[historySentences.length - 1] === clean) {
-    return;
+  if (lastDisplayedCurrentSentence && lastDisplayedCurrentSentence !== clean) {
+    historySentences.push(lastDisplayedCurrentSentence);
+    while (historySentences.length > MAX_PREV_SENTENCES) {
+      historySentences.shift();
+    }
   }
-  historySentences.push(clean);
+  lastDisplayedCurrentSentence = clean;
   renderHistoryDisplay();
 }
 
 /**
- * 재접속(replay) 또는 전체 대화 수신 시 이전 문장들을 번역 단위별로 파싱하여 초기화
+ * 재접속(replay) 또는 전체 대화 수신 시 이전 문장들을 최대 5개까지만 초기화
  */
 function seedHistoryFromFullText(fullText, currentSentence) {
   if (!fullText || !fullText.trim()) return;
   const parts = fullText.split(/\n+/).map((s) => s.trim()).filter(Boolean);
   if (parts.length === 0) return;
 
-  historySentences = [];
-  for (const p of parts) {
-    if (!historySentences.includes(p)) {
-      historySentences.push(p);
-    }
-  }
-  if (currentSentence && currentSentence.trim() && !historySentences.includes(currentSentence.trim())) {
-    historySentences.push(currentSentence.trim());
-  }
+  const cleanCurrent = (currentSentence || parts[parts.length - 1] || "").trim();
+  lastDisplayedCurrentSentence = cleanCurrent;
+  const prevParts = parts.filter((p) => p !== cleanCurrent);
+  historySentences = prevParts.slice(-MAX_PREV_SENTENCES);
   renderHistoryDisplay();
 }
 

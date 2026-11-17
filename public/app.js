@@ -1,11 +1,16 @@
 /**
- * 3-Way Multilingual Live Captioning
- * Supports Korean (KO), English (EN), and Vietnamese (VI).
- * Uses dual parallel Gemini 3.5 Live Translate WebSocket connections.
+ * Unified 3-Way Multilingual Live Translation & Neural TTS Service (v4.0)
+ * - 2-Button Control: [1. 번역 시작] (세션 준비) + [2. 문장 번역] (한 문장씩 수동 시작 -> 번역 & TTS -> 대기)
+ * - Unified Screen: 실시간 번역 화면 + 고음질 AI 신경망 TTS 화면 통합
+ * - Sentence Display: 현문장과 바로 직전의 한 문장만 표시 (총 2문장 화면 유지)
+ * - Screen Optimization: 화면 최적화 버튼 클릭 시 발화언어선택/AI음성/마이크설정 숨김 및 2부분/3부분 집중 화면
  */
 
 const MODEL = "models/gemini-3.5-live-translate-preview";
-const WS_ENDPOINT_BASE = "wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1alpha.GenerativeService.BidiGenerateContent";
+const WS_ENDPOINT_BASE =
+  "wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1alpha.GenerativeService.BidiGenerateContent";
+const MAX_PREV_SENTENCES = 1; // 바로 직전의 한 문장만 유지 (현문장 1개와 함께 총 2개 문장이 화면에 표시됨)
+const MAX_VISIBLE_SOURCE_SENTENCES = 2; // 한국어 원문 화면에 표시되는 최대 문장 수 (직전 1문장 + 현문장 = 총 2개)
 
 const LANG_CONFIGS = {
   ko: {
@@ -14,23 +19,25 @@ const LANG_CONFIGS = {
     flag: "🇰🇷",
     title: "🇰🇷 한국어 → 🇻🇳 베트남어 · 🇺🇸 영어",
     sourceLabel: "🇰🇷 한국어 원문 (발화)",
-    sourcePlaceholder: "마이크를 시작하고 한국어로 말씀하시면 음성이 여기에 인식됩니다.",
+    sourcePlaceholder: "[1. 번역 시작]을 누른 뒤 [2. 문장 번역] 버튼을 눌러 한국어로 한 문장씩 말씀하세요.",
     target1: {
       code: "vi",
       name: "베트남어",
       flag: "🇻🇳",
       label: "🇻🇳 TIẾNG VIỆT (베트남어 번역)",
-      placeholder: "베트남어 번역이 여기에 실시간으로 표시됩니다.",
-      instruction: "Bạn là thông dịch viên. Hãy dịch lời nói sang tiếng Việt một cách tự nhiên và chính xác. Bắt buộc chỉ xuất bản dịch bằng tiếng Việt (Vietnamese)."
+      placeholder: "베트남어 번역 현시점 문장이 여기에 표시됩니다.",
+      instruction:
+        "Bạn là thông dịch viên. Hãy dịch lời nói sang tiếng Việt một cách tự nhiên và chính xác. Bắt buộc chỉ xuất bản dịch bằng tiếng Việt (Vietnamese).",
     },
     target2: {
       code: "en",
       name: "영어",
       flag: "🇺🇸",
       label: "🇺🇸 ENGLISH (영어 번역)",
-      placeholder: "영어 번역이 여기에 실시간으로 표시됩니다.",
-      instruction: "You are an interpreter. Translate spoken audio accurately into natural English. You must only output in English."
-    }
+      placeholder: "영어 번역 현시점 문장이 여기에 표시됩니다.",
+      instruction:
+        "You are an interpreter. Translate spoken audio accurately into natural English. You must only output in English.",
+    },
   },
   en: {
     code: "en",
@@ -38,23 +45,25 @@ const LANG_CONFIGS = {
     flag: "🇺🇸",
     title: "🇺🇸 English → 🇻🇳 베트남어 · 🇰🇷 한국어",
     sourceLabel: "🇺🇸 English Original (Speech)",
-    sourcePlaceholder: "Start the mic and speak in English. Transcript will appear here.",
+    sourcePlaceholder: "Click [1. 번역 시작], then press [2. 문장 번역] to speak one sentence in English.",
     target1: {
       code: "vi",
       name: "베트남어",
       flag: "🇻🇳",
       label: "🇻🇳 TIẾNG VIỆT (베트남어 번역)",
-      placeholder: "베트남어 번역이 여기에 실시간으로 표시됩니다.",
-      instruction: "Bạn là thông dịch viên. Hãy dịch lời nói sang tiếng Việt một cách tự nhiên và chính xác. Bắt buộc chỉ xuất bản dịch bằng tiếng Việt (Vietnamese)."
+      placeholder: "베트남어 번역 현시점 문장이 여기에 표시됩니다.",
+      instruction:
+        "Bạn là thông dịch viên. Hãy dịch lời nói sang tiếng Việt một cách tự nhiên và chính xác. Bắt buộc chỉ xuất bản dịch bằng tiếng Việt (Vietnamese).",
     },
     target2: {
       code: "ko",
       name: "한국어",
       flag: "🇰🇷",
       label: "🇰🇷 한국어 (Korean 번역)",
-      placeholder: "한국어 번역이 여기에 실시간으로 표시됩니다.",
-      instruction: "당신은 전문 통역사입니다. 들리는 음성을 자연스럽고 정확한 한국어로 번역하세요. 반드시 한국어로만 출력해야 합니다."
-    }
+      placeholder: "한국어 번역 현시점 문장이 여기에 표시됩니다.",
+      instruction:
+        "당신은 전문 통역사입니다. 들리는 음성을 자연스럽고 정확한 한국어로 번역하세요. 반드시 한국어로만 출력해야 합니다.",
+    },
   },
   vi: {
     code: "vi",
@@ -62,61 +71,109 @@ const LANG_CONFIGS = {
     flag: "🇻🇳",
     title: "🇻🇳 Tiếng Việt → 🇺🇸 영어 · 🇰🇷 한국어",
     sourceLabel: "🇻🇳 Tiếng Việt Nguyên bản (Phát biểu)",
-    sourcePlaceholder: "Bật mic và nói tiếng Việt. Văn bản nhận diện sẽ hiển thị ở đây.",
+    sourcePlaceholder: "Nhấn [1. 번역 시작], sau đó nhấn [2. 문장 번역] để nói từng câu bằng tiếng Việt.",
     target1: {
       code: "en",
       name: "영어",
       flag: "🇺🇸",
       label: "🇺🇸 ENGLISH (영어 번역)",
-      placeholder: "영어 번역이 여기에 실시간으로 표시됩니다.",
-      instruction: "You are an interpreter. Translate spoken audio accurately into natural English. You must only output in English."
+      placeholder: "영어 번역 현시점 문장이 여기에 표시됩니다.",
+      instruction:
+        "You are an interpreter. Translate spoken audio accurately into natural English. You must only output in English.",
     },
     target2: {
       code: "ko",
       name: "한국어",
       flag: "🇰🇷",
       label: "🇰🇷 한국어 (Korean 번역)",
-      placeholder: "한국어 번역이 여기에 실시간으로 표시됩니다.",
-      instruction: "당신은 전문 통역사입니다. 들리는 음성을 자연스럽고 정확한 한국어로 번역하세요. 반드시 한국어로만 출력해야 합니다."
-    }
-  }
+      placeholder: "한국어 번역 현시점 문장이 여기에 표시됩니다.",
+      instruction:
+        "당신은 전문 통역사입니다. 들리는 음성을 자연스럽고 정확한 한국어로 번역하세요. 반드시 한국어로만 출력해야 합니다.",
+    },
+  },
+};
+
+const DEFAULT_NEURAL_VOICES = {
+  ko: [
+    { id: "ko-KR-SunHiNeural", name: "선희 (여성 · 부드럽고 자연스러운 아나운서)", gender: "Female", lang: "ko" },
+    { id: "ko-KR-InJoonNeural", name: "인준 (남성 · 신뢰감 있고 부드러운 아나운서)", gender: "Male", lang: "ko" },
+    { id: "ko-KR-HyunsuMultilingualNeural", name: "현수 (남성 · 생동감 있는 자연스러운 대화체)", gender: "Male", lang: "ko" },
+  ],
+  en: [
+    { id: "en-US-JennyNeural", name: "Jenny (여성 · 가장 자연스러운 인기 AI 목소리)", gender: "Female", lang: "en" },
+    { id: "en-US-GuyNeural", name: "Guy (남성 · 편안하고 자연스러운 대화체)", gender: "Male", lang: "en" },
+    { id: "en-US-AriaNeural", name: "Aria (여성 · 명료하고 활기찬 뉴스/발표 톤)", gender: "Female", lang: "en" },
+    { id: "en-US-ChristopherNeural", name: "Christopher (남성 · 차분하고 중후한 신뢰감 톤)", gender: "Male", lang: "en" },
+    { id: "en-US-AvaNeural", name: "Ava (여성 · 세련되고 부드러운 톤)", gender: "Female", lang: "en" },
+    { id: "en-US-AndrewNeural", name: "Andrew (남성 · 따뜻하고 친근한 톤)", gender: "Male", lang: "en" },
+  ],
+  vi: [
+    { id: "vi-VN-HoaiMyNeural", name: "Hoài My (여성 · 성조와 억양이 완벽한 초자연 음성)", gender: "Female", lang: "vi" },
+    { id: "vi-VN-NamMinhNeural", name: "Nam Minh (남성 · 명확하고 부드러운 표준 성조 음성)", gender: "Male", lang: "vi" },
+  ],
+};
+
+const SAMPLE_SENTENCES = {
+  ko: "안녕하세요! 선택하신 한국어 실시간 인공지능 통역 목소리입니다.",
+  en: "Hello! This is your selected English ultra-realistic live translation voice.",
+  vi: "Xin chào! Đây là giọng đọc dịch trực tiếp tiếng Việt siêu tự nhiên của bạn.",
 };
 
 const $ = (id) => document.getElementById(id);
 
-// UI Elements
+// Header & Modal Elements
 const mainTitle = $("mainTitle");
 const statusEl = $("status");
 const themeToggleBtn = $("themeToggleBtn");
 const themeIcon = $("themeIcon");
 const themeLabel = $("themeLabel");
-
-// History Modal Elements
 const historyModalBtn = $("historyModalBtn");
 const historyModal = $("historyModal");
 const closeHistoryModalBtn = $("closeHistoryModalBtn");
 const clearHistoryBtn = $("clearHistoryBtn");
 const timerBadge = $("timerBadge");
+const timerEl = $("timer");
+const historyList = $("historyList");
 
+// 2-Button Translation Controls
 const startBtn = $("startBtn");
+const sentenceTranslateBtn = $("sentenceTranslateBtn");
 const stopBtn = $("stopBtn");
 const clearBtn = $("clearBtn");
+const optimizeScreenBtn = $("optimizeScreenBtn");
+const translationOnlyBtn = $("translationOnlyBtn");
+const preset2PartBtn = $("preset2PartBtn");
+const preset3PartBtn = $("preset3PartBtn");
 const fullscreenBtn = $("fullscreenBtn");
 const fontSizeEl = $("fontSize");
 const micSelect = $("micSelect");
 const micRefreshBtn = $("micRefreshBtn");
 const micMeterBar = $("micMeterBar");
-const timerEl = $("timer");
-const historyList = $("historyList");
 
+// Panel Elements (Current Sentence + Previous 5 Sentences)
 const sourceLabel = $("sourceLabel");
 const target1Label = $("target1Label");
 const target2Label = $("target2Label");
-const sourceText = $("sourceText");
-const target1Text = $("target1Text");
-const target2Text = $("target2Text");
 
-// Panel Toggle Buttons & Text Elements
+const sourceCurrentText = $("sourceCurrentText");
+const sourceListeningPrompt = $("sourceListeningPrompt");
+const target1CurrentText = $("target1CurrentText");
+const target2CurrentText = $("target2CurrentText");
+
+const sourcePrevList = $("sourcePrevList");
+const target1PrevList = $("target1PrevList");
+const target2PrevList = $("target2PrevList");
+
+const sourcePrevCount = $("sourcePrevCount");
+const target1PrevCount = $("target1PrevCount");
+const target2PrevCount = $("target2PrevCount");
+
+const target1TtsActiveBadge = $("target1TtsActiveBadge");
+const target2TtsActiveBadge = $("target2TtsActiveBadge");
+const speakTarget1Btn = $("speakTarget1Btn");
+const speakTarget2Btn = $("speakTarget2Btn");
+
+// Panel Visibility Toggle Buttons
 const toggleSourceBtn = $("toggleSourceBtn");
 const toggleTarget1Btn = $("toggleTarget1Btn");
 const toggleTarget2Btn = $("toggleTarget2Btn");
@@ -124,14 +181,38 @@ const toggleSourceText = $("toggleSourceText");
 const toggleTarget1Text = $("toggleTarget1Text");
 const toggleTarget2Text = $("toggleTarget2Text");
 
-// Panel Visibility State (Default: all true)
+// Integrated TTS Elements
+const autoTtsToggle = $("autoTtsToggle");
+const ttsModeT1Btn = $("ttsModeT1Btn");
+const ttsModeT2Btn = $("ttsModeT2Btn");
+const ttsModeBothBtn = $("ttsModeBothBtn");
+const ttsSpeakingIndicator = $("ttsSpeakingIndicator");
+const ttsStatusLabel = $("ttsStatusLabel");
+const voiceSelect = $("voiceSelect");
+const ttsRate = $("ttsRate");
+const ttsPitch = $("ttsPitch");
+const ttsVolume = $("ttsVolume");
+const rateValue = $("rateValue");
+const pitchValue = $("pitchValue");
+const volumeValue = $("volumeValue");
+const testVoiceBtn = $("testVoiceBtn");
+const replayCurrentTtsBtn = $("replayCurrentTtsBtn");
+const stopTtsBtn = $("stopTtsBtn");
+const currentTtsText = $("currentTtsText");
+
+const langBtns = {
+  ko: $("langKoBtn"),
+  en: $("langEnBtn"),
+  vi: $("langViBtn"),
+};
+
+/* ─── Panel Visibility State ─── */
 const panelVisibility = {
   source: true,
   target1: true,
-  target2: true
+  target2: true,
 };
 
-// Restore saved visibility preferences
 try {
   const savedSource = localStorage.getItem("kv_panel_source");
   const savedTarget1 = localStorage.getItem("kv_panel_target1");
@@ -139,8 +220,6 @@ try {
   if (savedSource !== null) panelVisibility.source = savedSource === "true";
   if (savedTarget1 !== null) panelVisibility.target1 = savedTarget1 === "true";
   if (savedTarget2 !== null) panelVisibility.target2 = savedTarget2 === "true";
-
-  // Prevent all being false
   if (!panelVisibility.source && !panelVisibility.target1 && !panelVisibility.target2) {
     panelVisibility.source = true;
     panelVisibility.target1 = true;
@@ -154,35 +233,56 @@ function updateToggleButtonState(btn, isVisible) {
   btn.classList.toggle("inactive", !isVisible);
   btn.setAttribute("aria-pressed", String(isVisible));
   const icon = btn.querySelector(".toggle-icon");
-  if (icon) {
-    icon.textContent = isVisible ? "👁️" : "🙈";
-  }
+  if (icon) icon.textContent = isVisible ? "👁️" : "🙈";
 }
 
 function updatePanelVisibility() {
   const panelsEl = document.querySelector(".panels");
   if (!panelsEl) return;
 
-  const sPanel = $("sourcePanel");
-  const t1Panel = $("target1Panel");
-  const t2Panel = $("target2Panel");
+  $("sourcePanel")?.classList.toggle("is-hidden", !panelVisibility.source);
+  $("target1Panel")?.classList.toggle("is-hidden", !panelVisibility.target1);
+  $("target2Panel")?.classList.toggle("is-hidden", !panelVisibility.target2);
 
-  // Toggle individual panel display
-  sPanel?.classList.toggle("is-hidden", !panelVisibility.source);
-  t1Panel?.classList.toggle("is-hidden", !panelVisibility.target1);
-  t2Panel?.classList.toggle("is-hidden", !panelVisibility.target2);
-
-  // Toggle container adaptive grid classes
   panelsEl.classList.toggle("hide-source", !panelVisibility.source);
   panelsEl.classList.toggle("hide-target-1", !panelVisibility.target1);
   panelsEl.classList.toggle("hide-target-2", !panelVisibility.target2);
 
-  // Update button visual states
   updateToggleButtonState(toggleSourceBtn, panelVisibility.source);
   updateToggleButtonState(toggleTarget1Btn, panelVisibility.target1);
   updateToggleButtonState(toggleTarget2Btn, panelVisibility.target2);
 
-  // Persist to localStorage
+  // 특정한 버튼: 번역문장만 보기 전용 버튼 상태 동기화
+  const isTranslationOnly = !panelVisibility.source && (panelVisibility.target1 || panelVisibility.target2);
+  if (translationOnlyBtn) {
+    translationOnlyBtn.classList.toggle("active", isTranslationOnly);
+    if (isTranslationOnly) {
+      translationOnlyBtn.innerHTML = "👁️ 전체 창 보기 (원문 복원)";
+      translationOnlyBtn.title = "원문 창을 다시 표시하여 원문과 번역문장을 모두 봅니다";
+    } else {
+      translationOnlyBtn.innerHTML = "🌐 번역문장만 보기";
+      translationOnlyBtn.title = "원문 창을 숨기고 번역문장 창만 화면 가득 표시합니다";
+    }
+  }
+
+  // 2분할(원문+번역1개) / 3분할(원문+번역1+번역2) 프리셋 버튼 상태 동기화
+  const is2Part = panelVisibility.source && ((panelVisibility.target1 && !panelVisibility.target2) || (!panelVisibility.target1 && panelVisibility.target2));
+  const is3Part = panelVisibility.source && panelVisibility.target1 && panelVisibility.target2;
+
+  if (preset2PartBtn) {
+    preset2PartBtn.classList.toggle("active", is2Part);
+    if (panelVisibility.target1 && !panelVisibility.target2) {
+      preset2PartBtn.textContent = "2분할 (번역1)";
+    } else if (!panelVisibility.target1 && panelVisibility.target2) {
+      preset2PartBtn.textContent = "2분할 (번역2)";
+    } else {
+      preset2PartBtn.textContent = "2분할";
+    }
+  }
+  if (preset3PartBtn) {
+    preset3PartBtn.classList.toggle("active", is3Part);
+  }
+
   try {
     localStorage.setItem("kv_panel_source", String(panelVisibility.source));
     localStorage.setItem("kv_panel_target1", String(panelVisibility.target1));
@@ -190,28 +290,70 @@ function updatePanelVisibility() {
   } catch (_) {}
 }
 
+let isScreenOptimized = false;
+try {
+  isScreenOptimized = localStorage.getItem("kv_screen_optimized") === "true";
+} catch (_) {}
+
+function applyScreenOptimization() {
+  document.body.classList.toggle("screen-optimized", isScreenOptimized);
+  if (optimizeScreenBtn) {
+    optimizeScreenBtn.classList.toggle("active", isScreenOptimized);
+    if (isScreenOptimized) {
+      optimizeScreenBtn.innerHTML = "↩️ 상단 메뉴 복원";
+      optimizeScreenBtn.title = "상단 헤더, 발화언어선택, AI음성, 마이크설정 등을 다시 표시합니다";
+    } else {
+      optimizeScreenBtn.innerHTML = "🖥️ 화면 최적화 (상단 숨김)";
+      optimizeScreenBtn.title = "화면 최적화: 상단 헤더, 발화언어선택, AI음성, 마이크설정 등을 숨기고 원문/번역창만 크게 표시합니다";
+    }
+  }
+}
+
+function toggleScreenOptimization() {
+  isScreenOptimized = !isScreenOptimized;
+  try {
+    localStorage.setItem("kv_screen_optimized", String(isScreenOptimized));
+  } catch (_) {}
+  applyScreenOptimization();
+}
+
 function togglePanel(panelKey) {
   const activeCount = Object.values(panelVisibility).filter(Boolean).length;
-  // Prevent closing the last visible panel
   if (panelVisibility[panelKey] && activeCount <= 1) {
     alert("최소 1개의 창은 화면에 표시되어야 합니다.");
     return;
   }
-
   panelVisibility[panelKey] = !panelVisibility[panelKey];
   updatePanelVisibility();
 }
 
-const langBtns = {
-  ko: $("langKoBtn"),
-  en: $("langEnBtn"),
-  vi: $("langViBtn")
-};
+/**
+ * 특정한 버튼을 누르면 번역문장만 보이는 기능:
+ * - 이미 번역문장만 보고 있다면 -> 원문 창을 다시 표시하여 전체 보기 복원
+ * - 원문이 표시 중이라면 -> 원문 창을 숨기고 번역문장 창들만 전체 화면으로 표시 및 상단 숨김 자동 적용
+ */
+function toggleTranslationOnlyMode() {
+  const isTranslationOnly = !panelVisibility.source && (panelVisibility.target1 || panelVisibility.target2);
+  if (isTranslationOnly) {
+    panelVisibility.source = true;
+  } else {
+    panelVisibility.source = false;
+    panelVisibility.target1 = true;
+    panelVisibility.target2 = true;
+    // 번역문장만 보기 클릭 시에도 상단 메뉴 숨김(화면 최적화)을 함께 활성화
+    isScreenOptimized = true;
+    try {
+      localStorage.setItem("kv_screen_optimized", "true");
+    } catch (_) {}
+    applyScreenOptimization();
+  }
+  updatePanelVisibility();
+}
 
-// State
+/* ─── Core Application State ─── */
 let selectedLang = "ko";
-let ws1 = null; // target1
-let ws2 = null; // target2
+let ws1 = null;
+let ws2 = null;
 let isReady1 = false;
 let isReady2 = false;
 
@@ -224,72 +366,67 @@ let meterAnimFrame = null;
 let startedAt = 0;
 let timerHandle = null;
 
-let currentSource = "";
-let currentTarget1 = "";
-let currentTarget2 = "";
-let committedSourceLines = [];
-let committedTarget1Lines = [];
-let committedTarget2Lines = [];
-let turnActive1 = false;
-let turnActive2 = false;
-let commitTimeout = null;
-let ttsResumeTimeout = null;
-let ttsSafetyTimeout = null;
-
-// Continuous Session + Per-Sentence Lock & Anti-Howling State
+/**
+ * Turn State Machine:
+ * - "idle": 세션 시작 전 ([1. 번역 시작] 대기)
+ * - "standby": 세션 연결됨 · 대기 중 ([2. 문장 번역] 버튼을 눌러야만 한 문장 번역 시작)
+ * - "listening": [2. 문장 번역] 버튼을 눌러 한 문장 발화 및 실시간 인식 중
+ * - "finalizing": 한 문장 발화 종료 후 번역 확정 대기 중 (마이크 잠금)
+ * - "tts_playing": 번역 확정 완료 후 TTS 음성 출력 중 (완료 후 자동으로 "standby"로 복귀하여 다음 버튼 클릭 대기)
+ */
 let sessionRunning = false;
-let sentenceMicLocked = false;
-let hasCommittedSentence = false;
-let isTtsGuardActive = false;
+let turnState = "idle";
 let ws1TurnDone = false;
 let ws2TurnDone = false;
 let voiceDetectedInSentence = false;
 let voiceStartAt = 0;
 let lastVoiceAt = 0;
-let isTtsPlayingOnListener = false;
+let commitTimeout = null;
+let maxListenTimeout = null;
 
-// Listener Broadcast Channel & WebSocket
-const broadcastChannel = typeof BroadcastChannel !== "undefined" ? new BroadcastChannel("live_translation_stream") : null;
+// 현시점 문장(1개) + 이전 문장(최대 5개) 슬라이딩 윈도우 상태 + 원문 발화 지속 누적 상태
+let currentSource = "";
+let browserSttText = "";
+let currentTarget1 = "";
+let currentTarget2 = "";
+
+let committedCurrent = null; // { source: "", target1: "", target2: "" } - 현시점에 확정되어 표시 중인 문장
+let allSpokenSourceLines = []; // 한국어 원문(발화) 항목에 사라지지 않고 계속 표시되는 전체 발화 문장 목록
+let prevSourceLines = [];    // 이전 문장 목록 (최대 5개)
+let prevTarget1Lines = [];   // 이전 문장 목록 (최대 5개)
+let prevTarget2Lines = [];   // 이전 문장 목록 (최대 5개)
+let hasShiftedTargetForTurn = false;
+let speechRecognizer = null;
+
+// 문장 번역 시작 시 이전 문장으로 밀어낸 백업 (발화 없이 취소된 경우 복원용)
+let pendingShiftedTurn = null;
+
+/* ─── Integrated TTS Engine State ─── */
+let ttsMode = localStorage.getItem("unified_tts_mode") || "target1"; // "target1" | "target2" | "both"
+if (!["target1", "target2", "both"].includes(ttsMode)) ttsMode = "target1";
+
+let voicesByLang = {
+  ko: [...DEFAULT_NEURAL_VOICES.ko],
+  en: [...DEFAULT_NEURAL_VOICES.en],
+  vi: [...DEFAULT_NEURAL_VOICES.vi],
+};
+let currentAudio = null;
+let isSpeaking = false;
+let audioUnlocked = false;
+let ttsPlaybackAborted = false;
+
+// Optional Listener Broadcast (for external /listener.html sync)
+const broadcastChannel =
+  typeof BroadcastChannel !== "undefined" ? new BroadcastChannel("live_translation_stream") : null;
 let broadcastWs = null;
 
-function handleListenerTtsStatus(speaking) {
-  isTtsPlayingOnListener = Boolean(speaking);
-  if (!sessionRunning) return;
-
-  if (isTtsPlayingOnListener) {
-    // TTS 재생이 시작되면 자동 재개 타이머를 취소하고 마이크 잠금 유지
-    if (ttsResumeTimeout) {
-      clearTimeout(ttsResumeTimeout);
-      ttsResumeTimeout = null;
-    }
-    if (!sentenceMicLocked) {
-      lockMicrophoneForSingleSentence();
-    }
-    setStatus("🔇 TTS 음성 출력 중 (하울링 차단 · 끝나면 자동 이어말하기)", "live");
-  } else if (isTtsGuardActive || hasCommittedSentence) {
-    // TTS 재생이 끝났으므로 스피커 잔향 소멸(600ms) 후 자동으로 다음 문장 마이크 활성화
-    if (ttsResumeTimeout) clearTimeout(ttsResumeTimeout);
-    ttsResumeTimeout = setTimeout(() => {
-      resumeNextSentenceTurn();
-    }, 600);
-  }
-}
-
-if (broadcastChannel) {
-  broadcastChannel.onmessage = (e) => {
-    const data = e.data;
-    if (!data || typeof data !== "object") return;
-    if (data.type === "tts_status") {
-      handleListenerTtsStatus(data.speaking);
-    }
-  };
-}
-
-/* ─── Speaker Auth (토큰 또는 클라우드/로컬 지원) ─── */
+/* ─── Speaker Auth & Broadcast ─── */
 const WS_PROTO = location.protocol === "https:" ? "wss:" : "ws:";
 let speakerToken = "";
 let isServerlessEnv = false;
-try { speakerToken = sessionStorage.getItem("kv_speaker_token") || ""; } catch (_) {}
+try {
+  speakerToken = sessionStorage.getItem("kv_speaker_token") || "";
+} catch (_) {}
 
 async function fetchSpeakerStatus() {
   const res = await fetch("/api/speaker-status", { cache: "no-store" });
@@ -300,7 +437,6 @@ async function fetchSpeakerStatus() {
   return data;
 }
 
-/** 토큰이 필요한 서버면 입력받고, 허용되지 않는 접속이면 오류를 던진다 */
 async function ensureSpeakerAuth(forcePrompt = false) {
   const status = await fetchSpeakerStatus();
   if (status.tokenRequired) {
@@ -308,17 +444,21 @@ async function ensureSpeakerAuth(forcePrompt = false) {
       const input = (prompt("화자 인증 토큰(SPEAKER_TOKEN)을 입력하세요") || "").trim();
       if (!input) throw new Error("화자 인증 토큰이 필요합니다.");
       speakerToken = input;
-      try { sessionStorage.setItem("kv_speaker_token", input); } catch (_) {}
+      try {
+        sessionStorage.setItem("kv_speaker_token", input);
+      } catch (_) {}
     }
   } else if (status.allowed === false) {
-    throw new Error("화자 모드는 서버 PC에서만 사용할 수 있습니다. 외부 접속은 서버 .env에 SPEAKER_TOKEN을 설정하세요.");
+    throw new Error("화자 모드는 서버 PC에서만 사용할 수 있습니다.");
   }
   return status;
 }
 
 function clearSpeakerToken() {
   speakerToken = "";
-  try { sessionStorage.removeItem("kv_speaker_token"); } catch (_) {}
+  try {
+    sessionStorage.removeItem("kv_speaker_token");
+  } catch (_) {}
 }
 
 async function connectBroadcastWs() {
@@ -328,11 +468,8 @@ async function connectBroadcastWs() {
   } catch (_) {
     return setTimeout(connectBroadcastWs, 3000);
   }
-  // Vercel 등 서버리스 환경에서는 WebSocket 서버 대신 BroadcastChannel + HTTP 릴레이 사용
   if (status.serverless) return;
-  // 스피커 권한이 없는 접속이면 방송 연결을 시도하지 않음(BroadcastChannel만 사용)
   if (!status.tokenRequired && status.allowed === false) return;
-  // 토큰이 아직 없으면 세션 시작(start) 때 입력된 뒤 다시 시도
   if (status.tokenRequired && !speakerToken) return setTimeout(connectBroadcastWs, 3000);
 
   const wsUrl = `${WS_PROTO}//${location.host}/ws/broadcast?role=speaker&token=${encodeURIComponent(speakerToken)}`;
@@ -341,37 +478,17 @@ async function connectBroadcastWs() {
     broadcastWs = new WebSocket(wsUrl);
     broadcastWs.onopen = () => {
       opened = true;
-      console.log("📡 Listener Broadcast WebSocket 연결됨 (화자)");
-      // Send current state immediately
-      emitListenerEvent({
-        type: "session_status",
-        status: sessionRunning ? "live" : "idle",
-        sourceLang: selectedLang,
-        target1Lang: LANG_CONFIGS[selectedLang]?.target1.code,
-        target2Lang: LANG_CONFIGS[selectedLang]?.target2.code,
-        currentSource,
-        currentTarget1,
-        currentTarget2,
-      });
-    };
-    broadcastWs.onmessage = (e) => {
-      try {
-        const data = JSON.parse(e.data);
-        if (data?.type === "tts_status") {
-          handleListenerTtsStatus(data.speaking);
-        }
-      } catch (_) {}
     };
     broadcastWs.onclose = () => {
-      // 연결 자체가 거부된 경우(토큰 오류) 다시 입력받도록 토큰 초기화
       if (!opened && status.tokenRequired) clearSpeakerToken();
       setTimeout(connectBroadcastWs, 3000);
     };
     broadcastWs.onerror = () => {
-      try { broadcastWs.close(); } catch (_) {}
+      try {
+        broadcastWs.close();
+      } catch (_) {}
     };
-  } catch (err) {
-    console.warn("Broadcast WS init error:", err);
+  } catch (_) {
     setTimeout(connectBroadcastWs, 3000);
   }
 }
@@ -379,19 +496,13 @@ connectBroadcastWs();
 
 function emitListenerEvent(payload) {
   try {
-    if (broadcastChannel) {
-      broadcastChannel.postMessage(payload);
-    }
-  } catch (err) {
-    console.warn("BroadcastChannel error:", err);
-  }
+    if (broadcastChannel) broadcastChannel.postMessage(payload);
+  } catch (_) {}
 
   if (broadcastWs && broadcastWs.readyState === WebSocket.OPEN) {
     try {
       broadcastWs.send(JSON.stringify(payload));
-    } catch (err) {
-      console.warn("Broadcast WS send error:", err);
-    }
+    } catch (_) {}
   } else if (isServerlessEnv && payload && payload.type !== "stream_update") {
     fetch(`/api/broadcast?token=${encodeURIComponent(speakerToken)}`, {
       method: "POST",
@@ -401,7 +512,6 @@ function emitListenerEvent(payload) {
   }
 }
 
-// Throttle stream updates for smoother rendering
 let streamEmitPending = false;
 function emitThrottledStreamUpdate() {
   if (streamEmitPending) return;
@@ -421,7 +531,7 @@ function emitThrottledStreamUpdate() {
   });
 }
 
-/* ─── Theme Management (Default: Light / Bright White) ─── */
+/* ─── Theme Management ─── */
 function setTheme(theme) {
   if (theme === "dark") {
     document.body.classList.add("dark-theme");
@@ -434,104 +544,666 @@ function setTheme(theme) {
   }
   try {
     localStorage.setItem("app_theme", theme);
-  } catch {}
+  } catch (_) {}
 }
 
-// Initialize theme (Default is light mode)
-const initialTheme = localStorage.getItem("app_theme") || "light";
-setTheme(initialTheme);
-
+setTheme(localStorage.getItem("app_theme") || "light");
 themeToggleBtn?.addEventListener("click", () => {
   const isDark = document.body.classList.contains("dark-theme");
   setTheme(isDark ? "light" : "dark");
 });
 
-/* ─── Sentence Auto Line Break Helpers ─── */
-/**
- * 한 문장이 끝나면(., ?, ! 등) 다음 줄로 자동 줄변환
- */
-function formatSentences(text) {
-  if (!text) return "";
-  // 1. 문장 종결 부호(., ?, !) 뒤에 공백이 있으면 줄바꿈으로 치환
-  let formatted = text.replace(/([.?!])\s+/g, "$1\n");
-  // 2. 문장 종결 부호 뒤에 바로 다음 글자가 붙는 경우 줄바꿈 삽입
-  formatted = formatted.replace(/([.?!])(?=[^\d\s\n.?!])/g, "$1\n");
-  // 3. 3줄 이상의 불필요한 연속 개행 정리
-  formatted = formatted.replace(/\n{3,}/g, "\n\n");
-  return formatted;
-}
-
-/**
- * 새로운 문장 턴이 시작될 때 이전 문장 뒤에 개행을 붙여 다음 줄로 이어지게 함
- */
-function appendTurnBreak(text, maxLines = 15) {
-  if (!text || !text.trim()) return "";
-  let trimmed = text.trim();
-  if (!/[.?!]$/.test(trimmed)) {
-    trimmed += ".";
-  }
-  const lines = trimmed.split("\n");
-  const recent = lines.length > maxLines ? lines.slice(lines.length - maxLines) : lines;
-  return recent.join("\n") + "\n";
-}
-
-/**
- * 패널 텍스트를 문장 줄바꿈 포맷팅하여 표시하고 아래로 자동 스크롤
- */
-function updatePanel(element, rawText) {
-  if (!element) return;
-  element.textContent = formatSentences(rawText);
-  element.scrollTop = element.scrollHeight;
-}
-
-/* ─── Status Badge ─── */
+/* ─── Status & 2-Button UI Sync ─── */
 function setStatus(text, kind = "idle") {
+  if (!statusEl) return;
   statusEl.textContent = text;
   statusEl.className = `status ${kind}`;
 }
 
-/* ─── Apply Language Selection ─── */
+function updateTranslationButtonsUI() {
+  if (!startBtn || !sentenceTranslateBtn || !stopBtn) return;
+
+  if (!sessionRunning || turnState === "idle") {
+    startBtn.disabled = false;
+    startBtn.classList.remove("is-connected");
+    startBtn.textContent = "🚀 1. 번역 시작";
+
+    sentenceTranslateBtn.disabled = true;
+    sentenceTranslateBtn.className = "btn-sentence-translate";
+    sentenceTranslateBtn.textContent = "🗣️ 2. 문장 번역 (한 문장 말하기)";
+
+    stopBtn.disabled = true;
+    return;
+  }
+
+  // 세션이 시작된 상태
+  startBtn.disabled = true;
+  startBtn.classList.add("is-connected");
+  startBtn.textContent = "✅ 1. 번역 시작됨";
+  stopBtn.disabled = false;
+
+  if (turnState === "standby") {
+    sentenceTranslateBtn.disabled = false;
+    sentenceTranslateBtn.className = "btn-sentence-translate ready-pulse";
+    sentenceTranslateBtn.textContent = committedCurrent
+      ? "🗣️ 2. 문장 번역 (다음 한 문장 말하기)"
+      : "🗣️ 2. 문장 번역 (누르고 한 문장 말하기)";
+  } else if (turnState === "listening") {
+    sentenceTranslateBtn.disabled = false;
+    sentenceTranslateBtn.className = "btn-sentence-translate is-listening";
+    sentenceTranslateBtn.textContent = "🎙️ 한 문장 듣는 중... (말씀 후 자동 번역 · 클릭 시 완료)";
+  } else if (turnState === "finalizing") {
+    sentenceTranslateBtn.disabled = true;
+    sentenceTranslateBtn.className = "btn-sentence-translate is-busy";
+    sentenceTranslateBtn.textContent = "⏳ 문장 번역 확정 중...";
+  } else if (turnState === "tts_playing") {
+    sentenceTranslateBtn.disabled = true;
+    sentenceTranslateBtn.className = "btn-sentence-translate is-busy";
+    sentenceTranslateBtn.textContent = "🔊 TTS 음성 출력 중... (끝나면 버튼 활성화)";
+  }
+}
+
+/* ─── Integrated Neural TTS Management ─── */
+function unlockAudio() {
+  if (audioUnlocked) return;
+  audioUnlocked = true;
+  try {
+    const silent = new Audio(
+      "data:audio/wav;base64,UklGRigAAABXQVZFZm10IBIAAAABAAEARKwAAIhYAQACABAAAABkYXRhAgAAAAEA"
+    );
+    silent.volume = 0.01;
+    silent.play().catch(() => {});
+  } catch (_) {}
+}
+
+function getActiveTtsVoiceLangCode() {
+  const config = LANG_CONFIGS[selectedLang];
+  if (ttsMode === "target2") return config.target2.code;
+  return config.target1.code;
+}
+
+async function fetchVoicesForLang(langCode) {
+  try {
+    const res = await fetch(`/api/voices?lang=${langCode}`);
+    if (res.ok) {
+      const data = await res.json();
+      if (Array.isArray(data.voices) && data.voices.length > 0) {
+        voicesByLang[langCode] = data.voices;
+      }
+    }
+  } catch (_) {}
+  return voicesByLang[langCode] || DEFAULT_NEURAL_VOICES[langCode] || [];
+}
+
+async function populateVoiceSelectForCurrentMode() {
+  if (!voiceSelect) return;
+  const langCode = getActiveTtsVoiceLangCode();
+  const voices = await fetchVoicesForLang(langCode);
+  const savedVoiceId = localStorage.getItem(`unified_voice_${langCode}`);
+
+  voiceSelect.innerHTML = "";
+  let matched = false;
+  voices.forEach((v, idx) => {
+    const opt = document.createElement("option");
+    opt.value = v.id;
+    const genderIcon = v.gender === "Female" ? "👩" : "👨";
+    opt.textContent = `${genderIcon} ${v.name}`;
+    if (savedVoiceId && v.id === savedVoiceId) {
+      opt.selected = true;
+      matched = true;
+    } else if (!savedVoiceId && idx === 0) {
+      opt.selected = true;
+      matched = true;
+    }
+    voiceSelect.appendChild(opt);
+  });
+  if (!matched && voices.length > 0) {
+    voiceSelect.selectedIndex = 0;
+  }
+}
+
+function getVoiceIdForLang(langCode) {
+  const activeLang = getActiveTtsVoiceLangCode();
+  if (langCode === activeLang && voiceSelect?.value) {
+    return voiceSelect.value;
+  }
+  const saved = localStorage.getItem(`unified_voice_${langCode}`);
+  const list = voicesByLang[langCode] || DEFAULT_NEURAL_VOICES[langCode] || [];
+  if (saved && list.some((v) => v.id === saved)) return saved;
+  return list[0]?.id || "ko-KR-SunHiNeural";
+}
+
+voiceSelect?.addEventListener("change", () => {
+  const langCode = getActiveTtsVoiceLangCode();
+  if (voiceSelect.value) {
+    try {
+      localStorage.setItem(`unified_voice_${langCode}`, voiceSelect.value);
+    } catch (_) {}
+  }
+});
+
+function updateTtsModeUI() {
+  const config = LANG_CONFIGS[selectedLang];
+  if (ttsModeT1Btn) {
+    ttsModeT1Btn.textContent = `${config.target1.flag} ${config.target1.name} (번역1)`;
+    ttsModeT1Btn.classList.toggle("active", ttsMode === "target1");
+  }
+  if (ttsModeT2Btn) {
+    ttsModeT2Btn.textContent = `${config.target2.flag} ${config.target2.name} (번역2)`;
+    ttsModeT2Btn.classList.toggle("active", ttsMode === "target2");
+  }
+  if (ttsModeBothBtn) {
+    ttsModeBothBtn.textContent = `🔊 ${config.target1.flag}+${config.target2.flag} 연속`;
+    ttsModeBothBtn.classList.toggle("active", ttsMode === "both");
+  }
+
+  if (target1TtsActiveBadge) {
+    target1TtsActiveBadge.classList.toggle("hidden", !(ttsMode === "target1" || ttsMode === "both"));
+  }
+  if (target2TtsActiveBadge) {
+    target2TtsActiveBadge.classList.toggle("hidden", !(ttsMode === "target2" || ttsMode === "both"));
+  }
+
+  populateVoiceSelectForCurrentMode();
+}
+
+function setTtsMode(mode) {
+  if (!["target1", "target2", "both"].includes(mode)) return;
+  ttsMode = mode;
+  try {
+    localStorage.setItem("unified_tts_mode", mode);
+  } catch (_) {}
+  updateTtsModeUI();
+}
+
+ttsModeT1Btn?.addEventListener("click", () => setTtsMode("target1"));
+ttsModeT2Btn?.addEventListener("click", () => setTtsMode("target2"));
+ttsModeBothBtn?.addEventListener("click", () => setTtsMode("both"));
+
+// TTS Sliders
+ttsRate?.addEventListener("input", () => {
+  if (rateValue) rateValue.textContent = `${Number(ttsRate.value).toFixed(1)}x`;
+  try {
+    localStorage.setItem("listener_tts_rate", ttsRate.value);
+  } catch (_) {}
+  if (currentAudio) currentAudio.playbackRate = Number(ttsRate.value);
+});
+
+ttsPitch?.addEventListener("input", () => {
+  if (pitchValue) pitchValue.textContent = Number(ttsPitch.value).toFixed(2);
+  try {
+    localStorage.setItem("listener_tts_pitch", ttsPitch.value);
+  } catch (_) {}
+});
+
+ttsVolume?.addEventListener("input", () => {
+  if (volumeValue) volumeValue.textContent = `${Math.round(Number(ttsVolume.value) * 100)}%`;
+  try {
+    localStorage.setItem("listener_tts_volume", ttsVolume.value);
+  } catch (_) {}
+  if (currentAudio) currentAudio.volume = Number(ttsVolume.value);
+});
+
+try {
+  const savedRate = localStorage.getItem("listener_tts_rate");
+  const savedPitch = localStorage.getItem("listener_tts_pitch");
+  const savedVolume = localStorage.getItem("listener_tts_volume");
+  if (savedRate && ttsRate) {
+    ttsRate.value = savedRate;
+    if (rateValue) rateValue.textContent = `${Number(savedRate).toFixed(1)}x`;
+  }
+  if (savedPitch && ttsPitch) {
+    ttsPitch.value = savedPitch;
+    if (pitchValue) pitchValue.textContent = Number(savedPitch).toFixed(2);
+  }
+  if (savedVolume && ttsVolume) {
+    ttsVolume.value = savedVolume;
+    if (volumeValue) volumeValue.textContent = `${Math.round(Number(savedVolume) * 100)}%`;
+  }
+} catch (_) {}
+
+function calculateRateString(rateMultiplier) {
+  const pct = Math.round((rateMultiplier - 1.0) * 100);
+  return pct >= 0 ? `+${pct}%` : `${pct}%`;
+}
+
+function calculatePitchString(pitchMultiplier) {
+  const hz = Math.round((pitchMultiplier - 1.0) * 50);
+  return hz >= 0 ? `+${hz}Hz` : `${hz}Hz`;
+}
+
+function setSpeakingIndicator(active, labelText) {
+  isSpeaking = active;
+  if (ttsSpeakingIndicator) {
+    ttsSpeakingIndicator.classList.toggle("inactive", !active);
+  }
+  if (ttsStatusLabel) {
+    ttsStatusLabel.textContent = labelText || (active ? "TTS 재생 중..." : "TTS 대기");
+  }
+}
+
+function stopCurrentAudio() {
+  if (currentAudio) {
+    try {
+      currentAudio.pause();
+      currentAudio.currentTime = 0;
+    } catch (_) {}
+    currentAudio = null;
+  }
+  if (window.speechSynthesis) {
+    try {
+      window.speechSynthesis.cancel();
+    } catch (_) {}
+  }
+}
+
+function stopTts() {
+  ttsPlaybackAborted = true;
+  stopCurrentAudio();
+  setSpeakingIndicator(false, "TTS 대기");
+
+  // 만약 문장 번역 후 TTS 재생 단계였다면 즉시 다음 문장 번역 버튼 활성화 대기 상태로 전환
+  if (sessionRunning && turnState === "tts_playing") {
+    enterStandbyAfterSentence();
+  }
+}
+
+function playSingleUtterance(text, langCode) {
+  return new Promise((resolve) => {
+    const clean = (text || "").trim();
+    if (!clean || ttsPlaybackAborted) {
+      resolve();
+      return;
+    }
+
+    stopCurrentAudio();
+    const voiceId = getVoiceIdForLang(langCode);
+    const speed = Number(ttsRate?.value || 1.0);
+    const pitch = Number(ttsPitch?.value || 1.0);
+    const volume = Number(ttsVolume?.value || 1.0);
+
+    const rateStr = calculateRateString(speed);
+    const pitchStr = calculatePitchString(pitch);
+
+    if (currentTtsText) {
+      currentTtsText.textContent = clean;
+    }
+    setSpeakingIndicator(true, "TTS 읽는 중...");
+
+    const url = `/api/tts?text=${encodeURIComponent(clean)}&voice=${encodeURIComponent(voiceId)}&rate=${encodeURIComponent(rateStr)}&pitch=${encodeURIComponent(pitchStr)}`;
+    const audio = new Audio(url);
+    currentAudio = audio;
+    audio.volume = volume;
+
+    let done = false;
+    const finish = () => {
+      if (done) return;
+      done = true;
+      currentAudio = null;
+      resolve();
+    };
+
+    audio.onended = finish;
+    audio.onerror = () => {
+      // Fallback to browser SpeechSynthesis if neural TTS endpoint fails
+      if (!window.speechSynthesis || ttsPlaybackAborted) {
+        finish();
+        return;
+      }
+      try {
+        const utt = new SpeechSynthesisUtterance(clean);
+        utt.lang = langCode;
+        utt.rate = speed;
+        utt.volume = volume;
+        utt.onend = finish;
+        utt.onerror = finish;
+        window.speechSynthesis.speak(utt);
+      } catch (_) {
+        finish();
+      }
+    };
+
+    audio.play().catch(() => {
+      finish();
+    });
+  });
+}
+
+async function playSentenceTts(sentenceObj, forcePlay = false) {
+  if (!sentenceObj) return;
+  if (!forcePlay && !autoTtsToggle?.checked) {
+    if (sessionRunning && turnState === "tts_playing") {
+      enterStandbyAfterSentence();
+    }
+    return;
+  }
+
+  unlockAudio();
+  ttsPlaybackAborted = false;
+  const config = LANG_CONFIGS[selectedLang];
+
+  const queue = [];
+  if (ttsMode === "target1") {
+    if (sentenceObj.target1) queue.push({ text: sentenceObj.target1, lang: config.target1.code });
+  } else if (ttsMode === "target2") {
+    if (sentenceObj.target2) queue.push({ text: sentenceObj.target2, lang: config.target2.code });
+  } else if (ttsMode === "both") {
+    if (sentenceObj.target1) queue.push({ text: sentenceObj.target1, lang: config.target1.code });
+    if (sentenceObj.target2) queue.push({ text: sentenceObj.target2, lang: config.target2.code });
+  }
+
+  if (queue.length === 0) {
+    if (sessionRunning && turnState === "tts_playing") {
+      enterStandbyAfterSentence();
+    }
+    return;
+  }
+
+  for (const item of queue) {
+    if (ttsPlaybackAborted) break;
+    await playSingleUtterance(item.text, item.lang);
+  }
+
+  setSpeakingIndicator(false, "TTS 완료");
+  if (sessionRunning && turnState === "tts_playing") {
+    enterStandbyAfterSentence();
+  }
+}
+
+// TTS Action Buttons
+stopTtsBtn?.addEventListener("click", () => {
+  stopTts();
+});
+
+testVoiceBtn?.addEventListener("click", async () => {
+  unlockAudio();
+  ttsPlaybackAborted = false;
+  const langCode = getActiveTtsVoiceLangCode();
+  const sample = SAMPLE_SENTENCES[langCode] || SAMPLE_SENTENCES.ko;
+  await playSingleUtterance(sample, langCode);
+  setSpeakingIndicator(false, "TTS 대기");
+});
+
+replayCurrentTtsBtn?.addEventListener("click", async () => {
+  if (committedCurrent && (committedCurrent.target1 || committedCurrent.target2)) {
+    await playSentenceTts(committedCurrent, true);
+  } else {
+    const langCode = getActiveTtsVoiceLangCode();
+    ttsPlaybackAborted = false;
+    await playSingleUtterance(SAMPLE_SENTENCES[langCode] || SAMPLE_SENTENCES.ko, langCode);
+    setSpeakingIndicator(false, "TTS 대기");
+  }
+});
+
+speakTarget1Btn?.addEventListener("click", async () => {
+  unlockAudio();
+  ttsPlaybackAborted = false;
+  const config = LANG_CONFIGS[selectedLang];
+  const text = committedCurrent?.target1 || currentTarget1 || SAMPLE_SENTENCES[config.target1.code];
+  await playSingleUtterance(text, config.target1.code);
+  setSpeakingIndicator(false, "TTS 대기");
+});
+
+speakTarget2Btn?.addEventListener("click", async () => {
+  unlockAudio();
+  ttsPlaybackAborted = false;
+  const config = LANG_CONFIGS[selectedLang];
+  const text = committedCurrent?.target2 || currentTarget2 || SAMPLE_SENTENCES[config.target2.code];
+  await playSingleUtterance(text, config.target2.code);
+  setSpeakingIndicator(false, "TTS 대기");
+});
+
+/* ─── Sliding Window Rendering: 현시점 문장 (1개) + 이전 문장 (최대 5개) ─── */
+function escapeHtml(str) {
+  return String(str || "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#039;");
+}
+
+function renderPreviousList(containerEl, countEl, linesArray, emptyMessage) {
+  if (!containerEl) return;
+  const count = linesArray.length;
+  if (countEl) {
+    countEl.textContent = `${count} / ${MAX_PREV_SENTENCES}문장`;
+  }
+
+  if (count === 0) {
+    containerEl.innerHTML = `<div class="prev-empty-placeholder">${escapeHtml(emptyMessage)}</div>`;
+    return;
+  }
+
+  // 바로 직전의 한 문장만 표시 (새 문장이 추가될 때 가장 오래된 문장 1개가 이미 shift()로 제거됨)
+  containerEl.innerHTML = linesArray
+    .map(
+      (line) => `
+      <div class="prev-sentence-item">
+        <span class="prev-sentence-num">직전 문장</span>
+        <span class="prev-sentence-content">${escapeHtml(line)}</span>
+      </div>
+    `
+    )
+    .join("");
+
+  containerEl.scrollTop = containerEl.scrollHeight;
+}
+
+function getActiveSourceText() {
+  return (currentSource || browserSttText || "").replace(/\s+/g, " ").trim();
+}
+
+function renderSourcePanel(config) {
+  if (!sourceCurrentText) return;
+
+  const activeLiveSource = (turnState === "listening" || turnState === "finalizing")
+    ? getActiveSourceText()
+    : "";
+
+  const allLines = [...allSpokenSourceLines];
+  if (activeLiveSource) {
+    allLines.push(activeLiveSource);
+  }
+
+  // 화면에는 현문장과 바로 직전의 한 문장만 보이게 함 (총 2문장 표시)
+  const displayLines = allLines.slice(-MAX_VISIBLE_SOURCE_SENTENCES);
+
+  if (sourcePrevCount) {
+    sourcePrevCount.textContent = `${displayLines.length} / ${MAX_VISIBLE_SOURCE_SENTENCES}문장 (직전+현문장)`;
+  }
+
+  // 말한 문장 중 직전 문장과 현문장 총 2개만 화면에 표시됨
+  if (displayLines.length === 0) {
+    const placeholder = sessionRunning
+      ? "[2. 문장 번역] 버튼을 누르고 말씀하시면 직전 문장과 현문장(총 2문장)이 여기에 표시됩니다."
+      : config.sourcePlaceholder;
+    sourceCurrentText.innerHTML = `<div class="source-placeholder-msg">${escapeHtml(placeholder)}</div>`;
+  } else {
+    sourceCurrentText.innerHTML = displayLines
+      .map((line, idx) => {
+        const isLatest = idx === displayLines.length - 1;
+        const isLive = isLatest && Boolean(activeLiveSource);
+        let badgeLabel = "";
+        if (isLive) {
+          badgeLabel = "🎙️ 발화 중";
+        } else if (isLatest) {
+          badgeLabel = "▶ 현시점 문장";
+        } else {
+          badgeLabel = "📜 직전 문장";
+        }
+        return `
+          <div class="source-spoken-item ${isLatest ? "is-latest" : ""}">
+            <span class="source-spoken-badge">${badgeLabel}</span>
+            <span class="source-spoken-text">${escapeHtml(line)}</span>
+          </div>
+        `;
+      })
+      .join("");
+    sourceCurrentText.scrollTop = sourceCurrentText.scrollHeight;
+  }
+
+  // "🎙️ 듣고 있습니다. 한 문장을 말씀하세요..." 안내 문구는 기존 문장을 지우지 않고 하단에 추가로 표시됨
+  if (sourceListeningPrompt) {
+    const isListeningNow = turnState === "listening" || turnState === "finalizing";
+    sourceListeningPrompt.classList.toggle("hidden", !isListeningNow);
+    if (turnState === "finalizing") {
+      sourceListeningPrompt.textContent = "⏳ 문장 인식을 마무리하고 번역을 확정하고 있습니다...";
+    } else {
+      sourceListeningPrompt.textContent = "🎙️ 듣고 있습니다. 한 문장을 말씀하세요...";
+    }
+  }
+}
+
+function refreshAllPanels() {
+  const config = LANG_CONFIGS[selectedLang];
+
+  // 1. 한국어 원문(발화) 패널: 화면에 보이는 직전 1문장 + 현문장(총 2문장) 표시
+  renderSourcePanel(config);
+
+  // 2. 번역 패널(번역 1, 번역 2): 현시점 문장 1개 + 직전 문장 1개 = 총 2개 문장 표시
+  let t1Curr = "";
+  let t2Curr = "";
+
+  const liveT1 = currentTarget1.replace(/\s+/g, " ").trim();
+  const liveT2 = currentTarget2.replace(/\s+/g, " ").trim();
+
+  if (turnState === "listening" || turnState === "finalizing") {
+    if (liveT1 || liveT2) {
+      t1Curr = liveT1 || "번역 중...";
+      t2Curr = liveT2 || "번역 중...";
+    } else if (committedCurrent) {
+      // 새 문장 번역이 도착하기 전까지는 직전 현시점 번역 문장을 그대로 유지
+      t1Curr = committedCurrent.target1 || "-";
+      t2Curr = committedCurrent.target2 || "-";
+    } else {
+      t1Curr = "🎙️ 듣고 있습니다. 말씀하시면 번역이 표시됩니다...";
+      t2Curr = "🎙️ 듣고 있습니다. 말씀하시면 번역이 표시됩니다...";
+    }
+  } else if (committedCurrent) {
+    t1Curr = committedCurrent.target1 || "-";
+    t2Curr = committedCurrent.target2 || "-";
+  } else {
+    t1Curr = sessionRunning
+      ? "[2. 문장 번역] 버튼을 누르고 말씀하시면 현시점 번역이 표시됩니다."
+      : config.target1.placeholder;
+    t2Curr = sessionRunning
+      ? "[2. 문장 번역] 버튼을 누르고 말씀하시면 현시점 번역이 표시됩니다."
+      : config.target2.placeholder;
+  }
+
+  if (target1CurrentText) target1CurrentText.textContent = t1Curr;
+  if (target2CurrentText) target2CurrentText.textContent = t2Curr;
+
+  // 3. 번역 패널의 직전 문장 목록 (최대 1개만 유지 · 현문장 포함 총 2개 문장 화면 표시)
+  renderPreviousList(
+    target1PrevList,
+    target1PrevCount,
+    prevTarget1Lines,
+    `바로 직전에 번역된 ${config.target1.name} 문장이 여기에 표시됩니다 (현문장 포함 총 2개 문장).`
+  );
+  renderPreviousList(
+    target2PrevList,
+    target2PrevCount,
+    prevTarget2Lines,
+    `바로 직전에 번역된 ${config.target2.name} 문장이 여기에 표시됩니다 (현문장 포함 총 2개 문장).`
+  );
+}
+
+/**
+ * 새로운 문장 번역이 시작되어 텍스트가 들어올 때,
+ * 기존 현시점 번역 문장(committedCurrent)을 이전 문장 목록(최대 5개)으로 이동하고
+ * 5개를 초과하면 가장 오래된 문장 1개를 제거(shift)합니다.
+ */
+function ensureTargetShiftedForCurrentTurn() {
+  if (hasShiftedTargetForTurn) return;
+  hasShiftedTargetForTurn = true;
+
+  if (!committedCurrent) {
+    pendingShiftedTurn = null;
+    return;
+  }
+
+  pendingShiftedTurn = {
+    committedCurrent: { ...committedCurrent },
+    prevSourceSnapshot: [...prevSourceLines],
+    prevTarget1Snapshot: [...prevTarget1Lines],
+    prevTarget2Snapshot: [...prevTarget2Lines],
+  };
+
+  if (committedCurrent.source) {
+    prevSourceLines.push(committedCurrent.source);
+    while (prevSourceLines.length > MAX_PREV_SENTENCES) {
+      prevSourceLines.shift();
+    }
+  }
+  if (committedCurrent.target1) {
+    prevTarget1Lines.push(committedCurrent.target1);
+    while (prevTarget1Lines.length > MAX_PREV_SENTENCES) {
+      prevTarget1Lines.shift();
+    }
+  }
+  if (committedCurrent.target2) {
+    prevTarget2Lines.push(committedCurrent.target2);
+    while (prevTarget2Lines.length > MAX_PREV_SENTENCES) {
+      prevTarget2Lines.shift();
+    }
+  }
+
+  committedCurrent = null;
+}
+
+function rollbackShiftedSentenceIfEmpty() {
+  if (!pendingShiftedTurn) return;
+  committedCurrent = pendingShiftedTurn.committedCurrent;
+  prevSourceLines = pendingShiftedTurn.prevSourceSnapshot;
+  prevTarget1Lines = pendingShiftedTurn.prevTarget1Snapshot;
+  prevTarget2Lines = pendingShiftedTurn.prevTarget2Snapshot;
+  pendingShiftedTurn = null;
+}
+
+/* ─── Apply Speaker Language Selection ─── */
 function setLanguage(langKey) {
   if (!LANG_CONFIGS[langKey]) return;
-  if (ws1 || ws2) {
+  if (sessionRunning || ws1 || ws2) {
     stop();
   }
 
   selectedLang = langKey;
   const config = LANG_CONFIGS[langKey];
 
-  // Update button active state
   Object.keys(langBtns).forEach((k) => {
     langBtns[k]?.classList.toggle("active", k === langKey);
   });
 
-  // Update header & panel texts
-  mainTitle.textContent = config.title;
-  sourceLabel.textContent = config.sourceLabel;
-  sourceText.textContent = config.sourcePlaceholder;
-  target1Label.textContent = config.target1.label;
-  target1Text.textContent = config.target1.placeholder;
-  target2Label.textContent = config.target2.label;
-  target2Text.textContent = config.target2.placeholder;
+  if (mainTitle) mainTitle.textContent = config.title;
+  if (sourceLabel) sourceLabel.textContent = config.sourceLabel;
+  if (target1Label) target1Label.textContent = config.target1.label;
+  if (target2Label) target2Label.textContent = config.target2.label;
 
   const target1Panel = $("target1Panel");
   const target2Panel = $("target2Panel");
   if (target1Panel) target1Panel.dataset.targetLang = config.target1.code;
   if (target2Panel) target2Panel.dataset.targetLang = config.target2.code;
 
-  // Update toggle button labels
   if (toggleSourceText) toggleSourceText.textContent = `원문 (${config.name})`;
   if (toggleTarget1Text) toggleTarget1Text.textContent = `번역 1 (${config.target1.name})`;
   if (toggleTarget2Text) toggleTarget2Text.textContent = `번역 2 (${config.target2.name})`;
 
   currentSource = "";
+  browserSttText = "";
   currentTarget1 = "";
   currentTarget2 = "";
-  committedSourceLines = [];
-  committedTarget1Lines = [];
-  committedTarget2Lines = [];
-  turnActive1 = false;
-  turnActive2 = false;
+  committedCurrent = null;
+  allSpokenSourceLines = [];
+  prevSourceLines = [];
+  prevTarget1Lines = [];
+  prevTarget2Lines = [];
+  hasShiftedTargetForTurn = false;
+  pendingShiftedTurn = null;
+
+  updateTtsModeUI();
+  refreshAllPanels();
 
   emitListenerEvent({
     type: "lang_changed",
@@ -544,7 +1216,6 @@ function setLanguage(langKey) {
   });
 }
 
-// Bind language buttons
 Object.entries(langBtns).forEach(([langKey, btn]) => {
   btn?.addEventListener("click", () => setLanguage(langKey));
 });
@@ -552,27 +1223,18 @@ Object.entries(langBtns).forEach(([langKey, btn]) => {
 /* ─── Mic Device Monitoring & Auto-Refresh ─── */
 let knownDeviceSignature = "";
 
-/**
- * Request audio permission briefly if labels are obscured/blank,
- * allowing browser to show actual hardware names (e.g. USB Microphone).
- */
 async function unlockMicLabels() {
   try {
     const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
     stream.getTracks().forEach((track) => track.stop());
     return true;
-  } catch (err) {
-    console.warn("마이크 권한 요청 실패/거절됨:", err);
+  } catch (_) {
     return false;
   }
 }
 
-/**
- * Enumerates all audio input devices and updates the <select> element.
- * Skips unnecessary DOM rebuilds if device list has not changed.
- */
 async function refreshMicDevices(force = false) {
-  if (!navigator.mediaDevices?.enumerateDevices) return;
+  if (!navigator.mediaDevices?.enumerateDevices || !micSelect) return;
   try {
     const devices = await navigator.mediaDevices.enumerateDevices();
     const audioInputs = devices.filter((d) => d.kind === "audioinput");
@@ -582,22 +1244,17 @@ async function refreshMicDevices(force = false) {
       .sort()
       .join("||");
 
-    if (!force && signature === knownDeviceSignature) {
-      return;
-    }
+    if (!force && signature === knownDeviceSignature) return;
     knownDeviceSignature = signature;
 
     const previousValue = micSelect.value || localStorage.getItem("preferred_mic_id") || "";
     let matched = false;
 
     micSelect.innerHTML = `<option value="">기본 마이크 (Default)</option>`;
-
     audioInputs.forEach((device, index) => {
       const option = document.createElement("option");
       option.value = device.deviceId;
-      // If label is empty, indicate permission may be needed
-      const displayName = device.label || `마이크 ${index + 1} (권한 필요)`;
-      option.textContent = displayName;
+      option.textContent = device.label || `마이크 ${index + 1} (권한 필요)`;
       if (device.deviceId && device.deviceId === previousValue) {
         option.selected = true;
         matched = true;
@@ -605,35 +1262,23 @@ async function refreshMicDevices(force = false) {
       micSelect.appendChild(option);
     });
 
-    // If currently selected device was disconnected while streaming, fall back to default
     if (previousValue && !matched && previousValue !== "") {
-      console.log("선택된 마이크 장치 연결 끊김 감지 → 기본 마이크로 전환");
       micSelect.value = "";
       localStorage.removeItem("preferred_mic_id");
       if (mediaStream) {
         stopMicrophone();
         await startMicrophone();
+        setMicHardwareEnabled(turnState === "listening");
       }
     }
-  } catch (err) {
-    console.warn("마이크 장치 목록 확인 실패:", err);
-  }
+  } catch (_) {}
 }
 
-// 1. Continuous background polling (every 1.5s) to detect USB plug/unplug immediately
 setInterval(() => refreshMicDevices(false), 1500);
-
-// 2. Browser hardware change event
-navigator.mediaDevices?.addEventListener("devicechange", () => {
-  console.log("오디오 장치 변경 이벤트(devicechange) 감지");
-  refreshMicDevices(true);
-});
-
-// 3. Update immediately when user clicks or opens the dropdown
+navigator.mediaDevices?.addEventListener("devicechange", () => refreshMicDevices(true));
 micSelect?.addEventListener("focus", () => refreshMicDevices(true));
 micSelect?.addEventListener("mousedown", () => refreshMicDevices(true));
 
-// 4. Manual refresh button: spins icon, unlocks labels if needed, and forces enumeration
 micRefreshBtn?.addEventListener("click", async () => {
   micRefreshBtn.classList.add("spinning");
   try {
@@ -644,28 +1289,28 @@ micRefreshBtn?.addEventListener("click", async () => {
   }
 });
 
-// 5. Seamless live device switching during active translation
 micSelect?.addEventListener("change", async () => {
   const newId = micSelect.value;
-  if (newId) {
-    localStorage.setItem("preferred_mic_id", newId);
-  } else {
-    localStorage.removeItem("preferred_mic_id");
-  }
+  if (newId) localStorage.setItem("preferred_mic_id", newId);
+  else localStorage.removeItem("preferred_mic_id");
 
   if (mediaStream) {
-    console.log("스트리밍 중 마이크 장치 변경됨 → 새 마이크로 전환:", newId);
     stopMicrophone();
     await startMicrophone();
+    setMicHardwareEnabled(turnState === "listening");
   }
 });
 
-// Initial discovery
 refreshMicDevices(true);
 
-/* ─── Audio level meter ─── */
+/* ─── Audio Level Meter & Helpers ─── */
 function updateMeter() {
   if (!analyserNode) return;
+  if (turnState !== "listening") {
+    if (micMeterBar) micMeterBar.style.width = "0%";
+    meterAnimFrame = requestAnimationFrame(updateMeter);
+    return;
+  }
   const data = new Uint8Array(analyserNode.frequencyBinCount);
   analyserNode.getByteFrequencyData(data);
   let sum = 0;
@@ -675,7 +1320,6 @@ function updateMeter() {
   meterAnimFrame = requestAnimationFrame(updateMeter);
 }
 
-/* ─── Base64 encode ─── */
 function base64FromBytes(bytes) {
   let binary = "";
   const chunk = 0x8000;
@@ -685,9 +1329,34 @@ function base64FromBytes(bytes) {
   return btoa(binary);
 }
 
-/* ─── History ─── */
+function float32ToInt16(input) {
+  const output = new Int16Array(input.length);
+  for (let i = 0; i < input.length; i++) {
+    const s = Math.max(-1, Math.min(1, input[i]));
+    output[i] = s < 0 ? s * 0x8000 : s * 0x7fff;
+  }
+  return output;
+}
+
+function resampleLinear(buffer, inputRate, outputRate = 16000) {
+  if (inputRate === outputRate) return buffer;
+  const ratio = inputRate / outputRate;
+  const newLength = Math.round(buffer.length / ratio);
+  const result = new Float32Array(newLength);
+  for (let i = 0; i < newLength; i++) {
+    const origin = i * ratio;
+    const index = Math.floor(origin);
+    const decimal = origin - index;
+    const next = Math.min(index + 1, buffer.length - 1);
+    result[i] = buffer[index] * (1 - decimal) + buffer[next] * decimal;
+  }
+  return result;
+}
+
+/* ─── History Modal ─── */
 function addHistory(src, t1, t2, config) {
   if (!src.trim() && !t1.trim() && !t2.trim()) return;
+  if (!historyList) return;
 
   const item = document.createElement("div");
   item.className = "history-item";
@@ -716,16 +1385,6 @@ function addHistory(src, t1, t2, config) {
   historyList.prepend(item);
 }
 
-function escapeHtml(str) {
-  return str
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;")
-    .replace(/'/g, "&#039;");
-}
-
-/* ─── Timer ─── */
 function updateTimer() {
   const sec = Math.floor((Date.now() - startedAt) / 1000);
   const mm = String(Math.floor(sec / 60)).padStart(2, "0");
@@ -735,59 +1394,21 @@ function updateTimer() {
   if (timerBadge) timerBadge.textContent = timeStr;
 }
 
-/* ─── History Modal Control ─── */
-function openHistoryModal() {
-  historyModal?.classList.remove("hidden");
-}
-
-function closeHistoryModal() {
-  historyModal?.classList.add("hidden");
-}
-
-historyModalBtn?.addEventListener("click", openHistoryModal);
-closeHistoryModalBtn?.addEventListener("click", closeHistoryModal);
+historyModalBtn?.addEventListener("click", () => historyModal?.classList.remove("hidden"));
+closeHistoryModalBtn?.addEventListener("click", () => historyModal?.classList.add("hidden"));
 clearHistoryBtn?.addEventListener("click", () => {
   if (historyList) historyList.innerHTML = "";
 });
-
 historyModal?.addEventListener("click", (e) => {
-  if (e.target === historyModal) {
-    closeHistoryModal();
-  }
+  if (e.target === historyModal) historyModal.classList.add("hidden");
 });
-
 document.addEventListener("keydown", (e) => {
   if (e.key === "Escape" && !historyModal?.classList.contains("hidden")) {
-    closeHistoryModal();
+    historyModal.classList.add("hidden");
   }
 });
 
-/* ─── Audio Helpers ─── */
-function float32ToInt16(input) {
-  const output = new Int16Array(input.length);
-  for (let i = 0; i < input.length; i++) {
-    const s = Math.max(-1, Math.min(1, input[i]));
-    output[i] = s < 0 ? s * 0x8000 : s * 0x7fff;
-  }
-  return output;
-}
-
-function resampleLinear(buffer, inputRate, outputRate = 16000) {
-  if (inputRate === outputRate) return buffer;
-  const ratio = inputRate / outputRate;
-  const newLength = Math.round(buffer.length / ratio);
-  const result = new Float32Array(newLength);
-  for (let i = 0; i < newLength; i++) {
-    const origin = i * ratio;
-    const index = Math.floor(origin);
-    const decimal = origin - index;
-    const next = Math.min(index + 1, buffer.length - 1);
-    result[i] = buffer[index] * (1 - decimal) + buffer[next] * decimal;
-  }
-  return result;
-}
-
-/* ─── Gemini 연결 URL (로컬 서버 프록시 또는 Vercel/클라우드 직접 연결) ─── */
+/* ─── Gemini Proxy URL ─── */
 let _cachedApiKey = null;
 async function getGeminiProxyUrl() {
   const status = await ensureSpeakerAuth();
@@ -803,13 +1424,21 @@ async function getGeminiProxyUrl() {
         _cachedApiKey = data.key;
       } else {
         let savedKey = "";
-        try { savedKey = localStorage.getItem("kv_gemini_api_key") || ""; } catch (_) {}
+        try {
+          savedKey = localStorage.getItem("kv_gemini_api_key") || "";
+        } catch (_) {}
         if (!savedKey) {
-          savedKey = (prompt("Vercel 환경변수에 GEMINI_API_KEY가 아직 설정되지 않았습니다.\nGemini API 키를 입력하시면 바로 사용 가능합니다:") || "").trim();
+          savedKey = (
+            prompt(
+              "환경변수에 GEMINI_API_KEY가 아직 설정되지 않았습니다.\nGemini API 키를 입력하시면 바로 사용 가능합니다:"
+            ) || ""
+          ).trim();
           if (!savedKey) {
-            throw new Error("Vercel 환경변수(GEMINI_API_KEY)를 설정하거나 API 키를 입력해주세요.");
+            throw new Error("GEMINI_API_KEY를 설정하거나 API 키를 입력해주세요.");
           }
-          try { localStorage.setItem("kv_gemini_api_key", savedKey); } catch (_) {}
+          try {
+            localStorage.setItem("kv_gemini_api_key", savedKey);
+          } catch (_) {}
         }
         _cachedApiKey = savedKey;
       }
@@ -819,173 +1448,190 @@ async function getGeminiProxyUrl() {
   return `${WS_PROTO}//${location.host}/ws/gemini?token=${encodeURIComponent(speakerToken)}`;
 }
 
-/* ─── Single-Sentence Turn Lock & Auto-Resume (연속 번역 유지 + 하울링 원천 차단) ─── */
-function buildDisplayText(committedArr, activeSentence) {
-  const lines = [...committedArr];
-  const cleanActive = (activeSentence || "").replace(/\s+/g, " ").trim();
-  if (cleanActive) lines.push(cleanActive);
-  return lines.join("\n");
-}
-
-function refreshAllPanels() {
-  const sDisplay = buildDisplayText(committedSourceLines, currentSource);
-  const t1Display = buildDisplayText(committedTarget1Lines, currentTarget1);
-  const t2Display = buildDisplayText(committedTarget2Lines, currentTarget2);
-
-  if (sDisplay) updatePanel(sourceText, sDisplay);
-  if (t1Display) updatePanel(target1Text, t1Display);
-  if (t2Display) updatePanel(target2Text, t2Display);
-}
-
-function lockMicrophoneForSingleSentence() {
-  if (sentenceMicLocked || hasCommittedSentence) return;
-  sentenceMicLocked = true;
-
-  // 하드웨어 마이크 트랙 즉시 음소거 (하울링/추가 발화 유입 차단)
+/* ─── Per-Sentence Manual Trigger + Automatic Turn Cut + TTS Integration ─── */
+function setMicHardwareEnabled(enabled) {
   if (mediaStream) {
     mediaStream.getAudioTracks().forEach((track) => {
-      track.enabled = false;
+      track.enabled = Boolean(enabled);
     });
   }
-  if (micMeterBar) micMeterBar.style.width = "0%";
-
-  setStatus("🔒 문장 번역 확정 중... (하울링 방지 마이크 일시 차단)", "live");
-  scheduleSingleSentenceFinalize(1000);
+  if (!enabled && micMeterBar) {
+    micMeterBar.style.width = "0%";
+  }
 }
 
-function scheduleSingleSentenceFinalize(delayMs = 550) {
-  if (hasCommittedSentence) return;
-  if (commitTimeout) clearTimeout(commitTimeout);
-  commitTimeout = setTimeout(() => {
-    finalizeSingleSentence();
-  }, delayMs);
-}
-
-function resumeNextSentenceTurn() {
+/**
+ * [2. 문장 번역] 버튼 클릭 시 호출:
+ * 딱 한 문장만 인식하도록 마이크를 열고, 이전 현시점 문장은 이전 문장(최대 5개) 목록으로 이동합니다.
+ */
+async function startSingleSentenceTurn() {
   if (!sessionRunning) return;
 
-  if (ttsResumeTimeout) {
-    clearTimeout(ttsResumeTimeout);
-    ttsResumeTimeout = null;
+  unlockAudio();
+
+  // 만약 이미 듣는 중("listening")에 버튼을 다시 누르면 즉시 발화 종료 및 번역 확정으로 넘어감
+  if (turnState === "listening") {
+    lockMicrophoneForSingleSentence();
+    return;
   }
-  if (ttsSafetyTimeout) {
-    clearTimeout(ttsSafetyTimeout);
-    ttsSafetyTimeout = null;
+
+  // 만약 WebSocket 연결이 끊어져 있었다면 자동 재연결
+  if (!ws1 || ws1.readyState !== WebSocket.OPEN || !ws2 || ws2.readyState !== WebSocket.OPEN) {
+    await reconnectWebSocketsIfNeeded();
   }
+
+  stopTts();
+
+  // 기존 번역 문장(committedCurrent)을 이전 문장 목록으로 이동 (5개 초과 시 가장 오래된 1개 자동 삭제)
+  hasShiftedTargetForTurn = false;
+  ensureTargetShiftedForCurrentTurn();
 
   currentSource = "";
   currentTarget1 = "";
   currentTarget2 = "";
-  sentenceMicLocked = false;
-  hasCommittedSentence = false;
-  isTtsGuardActive = false;
   ws1TurnDone = false;
   ws2TurnDone = false;
   voiceDetectedInSentence = false;
   voiceStartAt = 0;
   lastVoiceAt = 0;
 
-  // 마이크 트랙 다시 활성화 (번역 시작 버튼을 다시 누를 필요 없이 즉시 다음 문장 대기)
-  if (mediaStream) {
-    mediaStream.getAudioTracks().forEach((track) => {
-      track.enabled = true;
-    });
-  }
+  turnState = "listening";
+  setMicHardwareEnabled(true);
+  updateTranslationButtonsUI();
+  refreshAllPanels();
 
   const config = LANG_CONFIGS[selectedLang];
-  setStatus(`🎤 번역 중 — 다음 문장을 말씀하세요 (${config.flag} → ${config.target1.flag} · ${config.target2.flag})`, "live");
+  setStatus(
+    `🎤 한 문장 듣는 중 — 지금 한 문장을 말씀하세요 (${config.flag} → ${config.target1.flag} · ${config.target2.flag})`,
+    "live"
+  );
+
+  // 안전 타이머: 발화 없이 오랫동안 방치된 경우 자동 대기 복귀
+  if (maxListenTimeout) clearTimeout(maxListenTimeout);
+  maxListenTimeout = setTimeout(() => {
+    if (turnState === "listening") {
+      lockMicrophoneForSingleSentence();
+    }
+  }, 25000);
 }
 
-function finalizeSingleSentence() {
-  if (hasCommittedSentence) return;
+/**
+ * 한 문장 발화가 끝나면 즉시 마이크를 잠그고 번역 확정을 준비합니다.
+ */
+function lockMicrophoneForSingleSentence() {
+  if (turnState !== "listening") return;
+  turnState = "finalizing";
 
-  const sFinal = currentSource.replace(/\s+/g, " ").trim();
-  const t1Final = currentTarget1.replace(/\s+/g, " ").trim();
-  const t2Final = currentTarget2.replace(/\s+/g, " ").trim();
-
-  if (!sFinal && !t1Final && !t2Final) {
-    // 인식된 문장이 없으면 바로 다음 문장 대기 상태로 복귀
-    resumeNextSentenceTurn();
-    return;
+  if (maxListenTimeout) {
+    clearTimeout(maxListenTimeout);
+    maxListenTimeout = null;
   }
 
-  hasCommittedSentence = true;
-  sentenceMicLocked = true;
-  isTtsGuardActive = true;
+  setMicHardwareEnabled(false);
+  updateTranslationButtonsUI();
+  setStatus("⏳ 한 문장 번역 확정 중...", "standby");
+
+  scheduleSingleSentenceFinalize(850);
+}
+
+function scheduleSingleSentenceFinalize(delayMs = 500) {
+  if (turnState !== "finalizing") return;
+  if (commitTimeout) clearTimeout(commitTimeout);
+  commitTimeout = setTimeout(() => {
+    finalizeSingleSentence();
+  }, delayMs);
+}
+
+/**
+ * 한 문장 번역을 최종 확정하고, TTS를 진행한 뒤,
+ * 다시 [2. 문장 번역] 버튼을 눌러야만 다음 문장이 번역되도록 대기 상태("standby")로 전환합니다.
+ */
+function finalizeSingleSentence() {
+  if (turnState !== "finalizing") return;
 
   if (commitTimeout) {
     clearTimeout(commitTimeout);
     commitTimeout = null;
   }
 
-  // 1. 마이크 하드웨어 트랙을 확실히 잠근 상태에서 완성된 문장을 확정 목록에 고정 (절대 다른 말로 변하지 않음)
-  if (mediaStream) {
-    mediaStream.getAudioTracks().forEach((track) => {
-      track.enabled = false;
-    });
-  }
-  if (micMeterBar) micMeterBar.style.width = "0%";
+  setMicHardwareEnabled(false);
 
-  if (sFinal) {
-    committedSourceLines.push(sFinal);
-    if (committedSourceLines.length > 15) committedSourceLines.shift();
-  }
-  if (t1Final) {
-    committedTarget1Lines.push(t1Final);
-    if (committedTarget1Lines.length > 15) committedTarget1Lines.shift();
-  }
-  if (t2Final) {
-    committedTarget2Lines.push(t2Final);
-    if (committedTarget2Lines.length > 15) committedTarget2Lines.shift();
-  }
+  const sFinal = currentSource.replace(/\s+/g, " ").trim();
+  const t1Final = currentTarget1.replace(/\s+/g, " ").trim();
+  const t2Final = currentTarget2.replace(/\s+/g, " ").trim();
 
-  // 현재 턴 버퍼 즉시 초기화 (이전 문장이 수정되는 현상 원천 차단)
   currentSource = "";
   currentTarget1 = "";
   currentTarget2 = "";
 
-  // 2. 화면 패널 및 번역 기록(히스토리) 갱신
+  // 아무 음성도 인식되지 않은 경우 이전 문장 상태를 복원하고 대기 상태로 복귀
+  if (!sFinal && !t1Final && !t2Final) {
+    rollbackShiftedSentenceIfEmpty();
+    turnState = "standby";
+    updateTranslationButtonsUI();
+    refreshAllPanels();
+    setStatus("⚠️ 인식된 문장이 없습니다 — [2. 문장 번역] 버튼을 다시 누르고 말씀하세요", "standby");
+    return;
+  }
+
+  // 한국어 원문(발화) 항목: 화면에 직전 문장과 현문장(총 2문장)만 유지 (오래된 문장은 순차 제거)
+  if (sFinal) {
+    allSpokenSourceLines.push(sFinal);
+  } else if (t1Final || t2Final) {
+    allSpokenSourceLines.push("(음성 발화 완료)");
+  }
+  while (allSpokenSourceLines.length > MAX_VISIBLE_SOURCE_SENTENCES) {
+    allSpokenSourceLines.shift();
+  }
+
+  // 현시점 문장 확정 (직전 문장 1개 + 현문장 1개 = 총 2문장 표시)
+  pendingShiftedTurn = null;
+  committedCurrent = {
+    source: sFinal,
+    target1: t1Final,
+    target2: t2Final,
+  };
+
   refreshAllPanels();
   addHistory(sFinal, t1Final, t2Final, LANG_CONFIGS[selectedLang]);
 
-  // 3. 청취자 화면(TTS)으로 완성된 1문장 전송
+  // 외부 청취자 탭(/listener.html)이 열려 있을 경우를 위해 브로드캐스트 전송
   emitListenerEvent({
     type: "sentence_commit",
     sourceLang: selectedLang,
     sourceSentence: sFinal,
-    fullSource: committedSourceLines.join("\n"),
+    fullSource: [...prevSourceLines, sFinal].filter(Boolean).join("\n"),
     target1Lang: LANG_CONFIGS[selectedLang].target1.code,
     target1Sentence: t1Final,
-    fullTarget1: committedTarget1Lines.join("\n"),
+    fullTarget1: [...prevTarget1Lines, t1Final].filter(Boolean).join("\n"),
     target2Lang: LANG_CONFIGS[selectedLang].target2.code,
     target2Sentence: t2Final,
-    fullTarget2: committedTarget2Lines.join("\n"),
-    timestamp: Date.now()
+    fullTarget2: [...prevTarget2Lines, t2Final].filter(Boolean).join("\n"),
+    timestamp: Date.now(),
   });
 
   if (!sessionRunning) return;
 
-  setStatus("🔇 문장 확정 완료 (TTS 하울링 차단 중 · 잠시 후 자동 마이크 켜짐)", "live");
-
-  // 4. 청취자 화면에서 TTS가 실행되지 않는 경우에도 850ms 후 자동으로 마이크를 다시 켜서 계속 말할 수 있게 함
-  //    (만약 청취자 화면에서 TTS가 시작되면 handleListenerTtsStatus가 이 타이머를 취소하고 TTS 종료 시점에 재개함)
-  if (ttsResumeTimeout) clearTimeout(ttsResumeTimeout);
-  ttsResumeTimeout = setTimeout(() => {
-    if (!isTtsPlayingOnListener) {
-      resumeNextSentenceTurn();
-    }
-  }, 850);
-
-  // 안전 타이머: TTS 종료 신호가 누락되더라도 최대 대기 시간 후 자동으로 마이크 재개
-  const maxWaitMs = Math.min(10000, Math.max(3000, Math.max(t1Final.length, t2Final.length) * 120));
-  if (ttsSafetyTimeout) clearTimeout(ttsSafetyTimeout);
-  ttsSafetyTimeout = setTimeout(() => {
-    isTtsPlayingOnListener = false;
-    resumeNextSentenceTurn();
-  }, maxWaitMs);
+  // 번역 완료 후 통합 TTS 진행
+  if (autoTtsToggle?.checked && (t1Final || t2Final)) {
+    turnState = "tts_playing";
+    updateTranslationButtonsUI();
+    setStatus("🔊 번역 및 TTS 음성 출력 중... (완료 후 [2. 문장 번역] 버튼을 눌러 다음 문장 진행)", "tts");
+    playSentenceTts(committedCurrent, false);
+  } else {
+    enterStandbyAfterSentence();
+  }
 }
 
-/* ─── Microphone ─── */
+function enterStandbyAfterSentence() {
+  if (!sessionRunning) return;
+  turnState = "standby";
+  setMicHardwareEnabled(false);
+  updateTranslationButtonsUI();
+  setStatus("✅ 한 문장 번역·TTS 완료 — 다음 문장은 [2. 문장 번역] 버튼을 누르세요", "standby");
+}
+
+/* ─── Microphone Stream Initialization ─── */
 async function startMicrophone() {
   const selectedMicId = micSelect?.value || undefined;
   const audioConstraints = {
@@ -997,6 +1643,8 @@ async function startMicrophone() {
   if (selectedMicId) audioConstraints.deviceId = { exact: selectedMicId };
 
   mediaStream = await navigator.mediaDevices.getUserMedia({ audio: audioConstraints });
+  // [2. 문장 번역] 버튼을 누르기 전에는 하드웨어 마이크 트랙을 비활성화 상태로 유지
+  setMicHardwareEnabled(turnState === "listening");
   await refreshMicDevices(true);
 
   try {
@@ -1023,9 +1671,9 @@ async function startMicrophone() {
         ? input
         : resampleLinear(input, audioContext.sampleRate, 16000);
 
-    // 마이크가 잠긴 상태(1문장 발화 직후 번역 확정 대기 또는 TTS 재생 중)에는
-    // 순수 무음(0)만 전송하여 Gemini가 즉시 문장 번역을 끝내게 하고 외부 소리/하울링 유입을 원천 차단
-    if (sentenceMicLocked || isTtsPlayingOnListener || isTtsGuardActive || hasCommittedSentence) {
+    // [2. 문장 번역] 버튼을 눌러 "listening" 상태일 때만 실제 마이크 음성을 전송하고,
+    // 그 외 상태("standby", "finalizing", "tts_playing")에서는 무음(0)만 전송하여 번역이 절대 진행되지 않도록 차단
+    if (turnState !== "listening") {
       const silentPcm = new Int16Array(mono16k.length);
       const silentData = base64FromBytes(new Uint8Array(silentPcm.buffer));
       const silentPayload = JSON.stringify({
@@ -1034,15 +1682,19 @@ async function startMicrophone() {
         },
       });
       if (ws1 && ws1.readyState === WebSocket.OPEN && isReady1) {
-        try { ws1.send(silentPayload); } catch {}
+        try {
+          ws1.send(silentPayload);
+        } catch (_) {}
       }
       if (ws2 && ws2.readyState === WebSocket.OPEN && isReady2) {
-        try { ws2.send(silentPayload); } catch {}
+        try {
+          ws2.send(silentPayload);
+        } catch (_) {}
       }
       return;
     }
 
-    // 음성 에너지(RMS) 측정으로 한 문장 발화 시작 및 종료(침묵) 감지
+    // "listening" 상태에서 한 문장 발화 시작 및 종료(침묵) 감지
     let sumSq = 0;
     for (let i = 0; i < mono16k.length; i++) {
       sumSq += mono16k[i] * mono16k[i];
@@ -1061,7 +1713,7 @@ async function startMicrophone() {
       const silenceDuration = now - lastVoiceAt;
       const hasRecognizedText = currentSource.trim().length >= 2;
 
-      // 한 문장 발화 후 짧은 침묵(0.55초~0.75초)이 감지되면 즉시 마이크 입력을 끊고 해당 문장만 번역 확정
+      // 한 문장 발화 후 짧은 침묵(0.55초~0.75초) 감지 시 즉시 마이크를 잠그고 해당 1문장만 번역 확정
       if (
         (hasRecognizedText && silenceDuration >= 550) ||
         (spokenDuration >= 300 && silenceDuration >= 750)
@@ -1073,25 +1725,26 @@ async function startMicrophone() {
 
     const pcm16 = float32ToInt16(mono16k);
     const data = base64FromBytes(new Uint8Array(pcm16.buffer));
-
     const payload = JSON.stringify({
       realtimeInput: {
         audio: { data, mimeType: "audio/pcm;rate=16000" },
       },
     });
 
-    // Broadcast to both WebSockets in parallel
     if (ws1 && ws1.readyState === WebSocket.OPEN && isReady1) {
-      try { ws1.send(payload); } catch (e) { console.error("WS1 send error:", e); }
+      try {
+        ws1.send(payload);
+      } catch (_) {}
     }
     if (ws2 && ws2.readyState === WebSocket.OPEN && isReady2) {
-      try { ws2.send(payload); } catch (e) { console.error("WS2 send error:", e); }
+      try {
+        ws2.send(payload);
+      } catch (_) {}
     }
   };
 
   sourceNode.connect(processorNode);
 
-  // Mute local output to avoid feedback loop
   const muteNode = audioContext.createGain();
   muteNode.gain.value = 0;
   processorNode.connect(muteNode);
@@ -1099,235 +1752,272 @@ async function startMicrophone() {
 }
 
 function stopMicrophone() {
-  if (meterAnimFrame) { cancelAnimationFrame(meterAnimFrame); meterAnimFrame = null; }
-  if (analyserNode) { try { analyserNode.disconnect(); } catch {} analyserNode = null; }
+  if (meterAnimFrame) {
+    cancelAnimationFrame(meterAnimFrame);
+    meterAnimFrame = null;
+  }
+  if (analyserNode) {
+    try {
+      analyserNode.disconnect();
+    } catch (_) {}
+    analyserNode = null;
+  }
   if (micMeterBar) micMeterBar.style.width = "0%";
-  if (processorNode) { processorNode.disconnect(); processorNode.onaudioprocess = null; processorNode = null; }
-  if (sourceNode) { sourceNode.disconnect(); sourceNode = null; }
-  if (mediaStream) { mediaStream.getTracks().forEach((t) => t.stop()); mediaStream = null; }
-  if (audioContext) { audioContext.close(); audioContext = null; }
+  if (processorNode) {
+    processorNode.disconnect();
+    processorNode.onaudioprocess = null;
+    processorNode = null;
+  }
+  if (sourceNode) {
+    sourceNode.disconnect();
+    sourceNode = null;
+  }
+  if (mediaStream) {
+    mediaStream.getTracks().forEach((t) => t.stop());
+    mediaStream = null;
+  }
+  if (audioContext) {
+    audioContext.close();
+    audioContext = null;
+  }
 }
 
-/* ─── Start Dual Live Translation Session (Continuous + Per-Sentence Clean Cut) ─── */
+/* ─── WebSocket Connection Setup ─── */
+function createTranslationWebSockets(wsUrl, config, onBothReady) {
+  isReady1 = false;
+  isReady2 = false;
+
+  if (ws1) {
+    try {
+      ws1.close(1000, "Reconnect");
+    } catch (_) {}
+  }
+  if (ws2) {
+    try {
+      ws2.close(1000, "Reconnect");
+    } catch (_) {}
+  }
+
+  ws1 = new WebSocket(wsUrl);
+  ws1.onopen = () => {
+    const setupMsg = {
+      setup: {
+        model: MODEL,
+        generationConfig: {
+          responseModalities: ["AUDIO"],
+          translationConfig: {
+            targetLanguageCode: config.target1.code,
+            echoTargetLanguage: false,
+          },
+        },
+        inputAudioTranscription: {},
+        outputAudioTranscription: {},
+      },
+    };
+    ws1.send(JSON.stringify(setupMsg));
+  };
+
+  ws1.onmessage = async (event) => {
+    if (turnState !== "listening" && turnState !== "finalizing") return;
+    const raw = typeof event.data === "string" ? event.data : await event.data.text();
+    let msg;
+    try {
+      msg = JSON.parse(raw);
+    } catch {
+      return;
+    }
+
+    if (msg.setupComplete) {
+      isReady1 = true;
+      if (isReady1 && isReady2 && onBothReady) onBothReady();
+      return;
+    }
+
+    const content = msg.serverContent;
+    if (!content) return;
+
+    if (content.inputTranscription?.text && !ws1TurnDone) {
+      currentSource += content.inputTranscription.text;
+      refreshAllPanels();
+      emitThrottledStreamUpdate();
+      if (turnState === "finalizing") {
+        scheduleSingleSentenceFinalize(550);
+      }
+    }
+
+    if (content.outputTranscription?.text) {
+      currentTarget1 += content.outputTranscription.text;
+      refreshAllPanels();
+      emitThrottledStreamUpdate();
+
+      if (turnState === "listening" && lastVoiceAt > 0 && Date.now() - lastVoiceAt >= 380) {
+        lockMicrophoneForSingleSentence();
+      } else if (turnState === "finalizing") {
+        scheduleSingleSentenceFinalize(ws2TurnDone ? 220 : 550);
+      }
+    }
+
+    if (content.turnComplete) {
+      ws1TurnDone = true;
+      if (turnState === "listening") {
+        lockMicrophoneForSingleSentence();
+      }
+      if (turnState === "finalizing") {
+        scheduleSingleSentenceFinalize(ws2TurnDone || currentTarget2.trim().length > 0 ? 180 : 550);
+      }
+    }
+  };
+
+  ws2 = new WebSocket(wsUrl);
+  ws2.onopen = () => {
+    const setupMsg = {
+      setup: {
+        model: MODEL,
+        generationConfig: {
+          responseModalities: ["AUDIO"],
+          translationConfig: {
+            targetLanguageCode: config.target2.code,
+            echoTargetLanguage: false,
+          },
+        },
+        outputAudioTranscription: {},
+      },
+    };
+    ws2.send(JSON.stringify(setupMsg));
+  };
+
+  ws2.onmessage = async (event) => {
+    if (turnState !== "listening" && turnState !== "finalizing") return;
+    const raw = typeof event.data === "string" ? event.data : await event.data.text();
+    let msg;
+    try {
+      msg = JSON.parse(raw);
+    } catch {
+      return;
+    }
+
+    if (msg.setupComplete) {
+      isReady2 = true;
+      if (isReady1 && isReady2 && onBothReady) onBothReady();
+      return;
+    }
+
+    const content = msg.serverContent;
+    if (!content) return;
+
+    if (content.outputTranscription?.text) {
+      currentTarget2 += content.outputTranscription.text;
+      refreshAllPanels();
+      emitThrottledStreamUpdate();
+
+      if (turnState === "listening" && lastVoiceAt > 0 && Date.now() - lastVoiceAt >= 380) {
+        lockMicrophoneForSingleSentence();
+      } else if (turnState === "finalizing") {
+        scheduleSingleSentenceFinalize(ws1TurnDone ? 220 : 550);
+      }
+    }
+
+    if (content.turnComplete) {
+      ws2TurnDone = true;
+      if (turnState === "listening") {
+        lockMicrophoneForSingleSentence();
+      }
+      if (turnState === "finalizing") {
+        scheduleSingleSentenceFinalize(ws1TurnDone || currentTarget1.trim().length > 0 ? 180 : 550);
+      }
+    }
+  };
+
+  // SetupComplete 메시지 대기 처리 (turnState가 standby일 때도 setupComplete는 통과해야 함)
+  const attachSetupInterceptor = (ws, idx) => {
+    const origHandler = ws.onmessage;
+    ws.onmessage = async (event) => {
+      const raw = typeof event.data === "string" ? event.data : await event.data.text();
+      let msg;
+      try {
+        msg = JSON.parse(raw);
+      } catch {
+        return;
+      }
+      if (msg.setupComplete) {
+        if (idx === 1) isReady1 = true;
+        if (idx === 2) isReady2 = true;
+        if (isReady1 && isReady2 && onBothReady) onBothReady();
+        return;
+      }
+      if (origHandler) origHandler(event);
+    };
+  };
+
+  attachSetupInterceptor(ws1, 1);
+  attachSetupInterceptor(ws2, 2);
+}
+
+async function reconnectWebSocketsIfNeeded() {
+  const wsUrl = await getGeminiProxyUrl();
+  const config = LANG_CONFIGS[selectedLang];
+  await new Promise((resolve) => {
+    createTranslationWebSockets(wsUrl, config, resolve);
+    setTimeout(resolve, 2500);
+  });
+}
+
+/* ─── [1. 번역 시작] Button Handler ─── */
 async function start() {
-  if (ws1 || ws2) return;
+  if (sessionRunning) return;
 
   try {
-    sessionRunning = true;
-    isTtsPlayingOnListener = false;
-    emitListenerEvent({ type: "stop_tts" });
+    unlockAudio();
+    stopTts();
 
+    sessionRunning = true;
+    turnState = "standby";
     setStatus("연결 준비 중...", "idle");
     startBtn.disabled = true;
 
     const config = LANG_CONFIGS[selectedLang];
-
-    // 서버 프록시(/ws/gemini) 또는 클라우드 직접 연결
     const wsUrl = await getGeminiProxyUrl();
 
-    turnActive1 = false;
-    turnActive2 = false;
-    isReady1 = false;
-    isReady2 = false;
-    sentenceMicLocked = false;
-    hasCommittedSentence = false;
-    isTtsGuardActive = false;
-    ws1TurnDone = false;
-    ws2TurnDone = false;
-    voiceDetectedInSentence = false;
-    voiceStartAt = 0;
-    lastVoiceAt = 0;
-    currentSource = "";
-    currentTarget1 = "";
-    currentTarget2 = "";
+    await startMicrophone();
+    setMicHardwareEnabled(false);
 
-    if (committedSourceLines.length === 0) sourceText.textContent = "...";
-    if (committedTarget1Lines.length === 0) target1Text.textContent = "...";
-    if (committedTarget2Lines.length === 0) target2Text.textContent = "...";
+    createTranslationWebSockets(wsUrl, config, () => {
+      if (!sessionRunning) return;
+      turnState = "standby";
+      setMicHardwareEnabled(false);
+      updateTranslationButtonsUI();
+      refreshAllPanels();
 
-    // Setup 1 (Target 1 + Input Audio Transcription)
-    ws1 = new WebSocket(wsUrl);
-    ws1.onopen = () => {
-      console.log(`WS1 (${config.target1.name}: ${config.target1.code}) 연결됨`);
-      const setupMsg = {
-        setup: {
-          model: MODEL,
-          generationConfig: {
-            responseModalities: ["AUDIO"],
-            translationConfig: {
-              targetLanguageCode: config.target1.code,
-              echoTargetLanguage: false,
-            },
-          },
-          inputAudioTranscription: {},
-          outputAudioTranscription: {},
-        },
-      };
-      ws1.send(JSON.stringify(setupMsg));
-    };
-
-    ws1.onmessage = async (event) => {
-      if (hasCommittedSentence || isTtsGuardActive) return;
-      const raw = typeof event.data === "string" ? event.data : await event.data.text();
-      let msg;
-      try { msg = JSON.parse(raw); } catch { return; }
-
-      if (msg.setupComplete) {
-        console.log(`✅ WS1 (${config.target1.name}: ${config.target1.code}) setup 완료`);
-        isReady1 = true;
-        checkAllReady();
-        return;
-      }
-
-      const content = msg.serverContent;
-      if (!content) return;
-
-      // 1문장 원문 음성 인식 (WS1 턴이 완료되기 전까지만 반영하여 다른 말로 변하는 현상 방지)
-      if (content.inputTranscription?.text && !ws1TurnDone) {
-        currentSource += content.inputTranscription.text;
-        refreshAllPanels();
-        emitThrottledStreamUpdate();
-        if (sentenceMicLocked) {
-          scheduleSingleSentenceFinalize(600);
-        }
-      }
-
-      // Target 1 번역문 (outputTranscription만 사용하여 모델 내부 텍스트 혼입 차단)
-      if (content.outputTranscription?.text) {
-        currentTarget1 += content.outputTranscription.text;
-        refreshAllPanels();
-        emitThrottledStreamUpdate();
-
-        // 번역 출력이 시작되었고 사용자가 말을 멈춘 상태라면 즉시 마이크 잠금
-        if (!sentenceMicLocked && lastVoiceAt > 0 && Date.now() - lastVoiceAt >= 380) {
-          lockMicrophoneForSingleSentence();
-        } else if (sentenceMicLocked) {
-          scheduleSingleSentenceFinalize(ws2TurnDone ? 220 : 600);
-        }
-      }
-
-      if (content.turnComplete) {
-        ws1TurnDone = true;
-        lockMicrophoneForSingleSentence();
-        if (ws2TurnDone || currentTarget2.trim().length > 0) {
-          scheduleSingleSentenceFinalize(180);
-        } else {
-          scheduleSingleSentenceFinalize(600);
-        }
-      }
-    };
-
-    ws1.onerror = (e) => console.error("WS1 오류:", e);
-    ws1.onclose = (e) => {
-      console.log("WS1 종료:", e.code, e.reason);
-      if (e.code !== 1000 && sessionRunning) {
-        if (!isReady1) {
-          _cachedApiKey = null;
-          try { localStorage.removeItem("kv_gemini_api_key"); } catch (_) {}
-          startBtn.disabled = false;
-          sessionRunning = false;
-        } else if (ws1 || ws2) {
-          setStatus(`WS1 연결 끊김 (${e.code})`, "error");
-        }
-      }
-    };
-
-    // Setup 2 (Target 2 translation)
-    ws2 = new WebSocket(wsUrl);
-    ws2.onopen = () => {
-      console.log(`WS2 (${config.target2.name}: ${config.target2.code}) 연결됨`);
-      const setupMsg = {
-        setup: {
-          model: MODEL,
-          generationConfig: {
-            responseModalities: ["AUDIO"],
-            translationConfig: {
-              targetLanguageCode: config.target2.code,
-              echoTargetLanguage: false,
-            },
-          },
-          outputAudioTranscription: {},
-        },
-      };
-      ws2.send(JSON.stringify(setupMsg));
-    };
-
-    ws2.onmessage = async (event) => {
-      if (hasCommittedSentence || isTtsGuardActive) return;
-      const raw = typeof event.data === "string" ? event.data : await event.data.text();
-      let msg;
-      try { msg = JSON.parse(raw); } catch { return; }
-
-      if (msg.setupComplete) {
-        console.log(`✅ WS2 (${config.target2.name}: ${config.target2.code}) setup 완료`);
-        isReady2 = true;
-        checkAllReady();
-        return;
-      }
-
-      const content = msg.serverContent;
-      if (!content) return;
-
-      // Target 2 번역문 (outputTranscription만 사용)
-      if (content.outputTranscription?.text) {
-        currentTarget2 += content.outputTranscription.text;
-        refreshAllPanels();
-        emitThrottledStreamUpdate();
-
-        if (!sentenceMicLocked && lastVoiceAt > 0 && Date.now() - lastVoiceAt >= 380) {
-          lockMicrophoneForSingleSentence();
-        } else if (sentenceMicLocked) {
-          scheduleSingleSentenceFinalize(ws1TurnDone ? 220 : 600);
-        }
-      }
-
-      if (content.turnComplete) {
-        ws2TurnDone = true;
-        lockMicrophoneForSingleSentence();
-        if (ws1TurnDone || currentTarget1.trim().length > 0) {
-          scheduleSingleSentenceFinalize(180);
-        } else {
-          scheduleSingleSentenceFinalize(600);
-        }
-      }
-    };
-
-    ws2.onerror = (e) => console.error("WS2 오류:", e);
-    ws2.onclose = (e) => {
-      console.log("WS2 종료:", e.code, e.reason);
-      if (e.code !== 1000 && sessionRunning && (ws1 || ws2)) {
-        setStatus(`WS2 연결 끊김 (${e.code})`, "error");
-      }
-    };
-
-    async function checkAllReady() {
-      if (isReady1 && isReady2 && !mediaStream) {
-        setStatus(`🎤 번역 중 — 말씀하세요 (${config.flag} → ${config.target1.flag} · ${config.target2.flag})`, "live");
-        stopBtn.disabled = false;
+      if (!timerHandle) {
         startedAt = Date.now();
         timerHandle = setInterval(updateTimer, 1000);
-        await startMicrophone();
-
-        emitListenerEvent({
-          type: "session_status",
-          status: "live",
-          sourceLang: selectedLang,
-          sourceName: config.name,
-          target1Lang: config.target1.code,
-          target2Lang: config.target2.code,
-        });
       }
-    }
+
+      setStatus(
+        "✅ 번역 준비 완료 — [2. 문장 번역] 버튼을 누르고 한 문장씩 말씀하세요",
+        "standby"
+      );
+
+      emitListenerEvent({
+        type: "session_status",
+        status: "live",
+        sourceLang: selectedLang,
+        sourceName: config.name,
+        target1Lang: config.target1.code,
+        target2Lang: config.target2.code,
+      });
+    });
   } catch (error) {
     console.error("세션 시작 실패:", error);
     setStatus(`오류: ${error.message}`, "error");
     sessionRunning = false;
-    startBtn.disabled = false;
+    turnState = "idle";
+    updateTranslationButtonsUI();
     stop();
   }
 }
 
-/* ─── Stop Session ─── */
+/* ─── [중지] Button Handler ─── */
 function stop() {
   sessionRunning = false;
 
@@ -1335,41 +2025,47 @@ function stop() {
     clearTimeout(commitTimeout);
     commitTimeout = null;
   }
-  if (ttsResumeTimeout) {
-    clearTimeout(ttsResumeTimeout);
-    ttsResumeTimeout = null;
-  }
-  if (ttsSafetyTimeout) {
-    clearTimeout(ttsSafetyTimeout);
-    ttsSafetyTimeout = null;
+  if (maxListenTimeout) {
+    clearTimeout(maxListenTimeout);
+    maxListenTimeout = null;
   }
 
-  // 아직 확정되지 않은 텍스트가 있으면 마지막 문장으로 확정 처리
-  if (!hasCommittedSentence && (currentSource.trim() || currentTarget1.trim() || currentTarget2.trim())) {
+  if (
+    (turnState === "listening" || turnState === "finalizing") &&
+    (currentSource.trim() || currentTarget1.trim() || currentTarget2.trim())
+  ) {
+    turnState = "finalizing";
     finalizeSingleSentence();
   }
 
+  stopTts();
   stopMicrophone();
 
-  if (ws1) { try { ws1.close(1000, "User stopped"); } catch {} ws1 = null; }
-  if (ws2) { try { ws2.close(1000, "User stopped"); } catch {} ws2 = null; }
+  if (ws1) {
+    try {
+      ws1.close(1000, "User stopped");
+    } catch (_) {}
+    ws1 = null;
+  }
+  if (ws2) {
+    try {
+      ws2.close(1000, "User stopped");
+    } catch (_) {}
+    ws2 = null;
+  }
 
   isReady1 = false;
   isReady2 = false;
-  turnActive1 = false;
-  turnActive2 = false;
-  sentenceMicLocked = false;
-  hasCommittedSentence = false;
-  isTtsGuardActive = false;
-  stopBtn.disabled = true;
-  startBtn.disabled = false;
+  turnState = "idle";
+  updateTranslationButtonsUI();
+  refreshAllPanels();
 
   clearInterval(timerHandle);
   timerHandle = null;
   if (timerBadge) timerBadge.textContent = "00:00";
   if (timerEl) timerEl.textContent = "00:00";
 
-  setStatus("대기 중", "idle");
+  setStatus("대기 중 ([1. 번역 시작] 버튼을 누르세요)", "idle");
 
   emitListenerEvent({
     type: "session_status",
@@ -1378,36 +2074,45 @@ function stop() {
 }
 
 /* ─── Event Listeners ─── */
-startBtn.addEventListener("click", start);
-stopBtn.addEventListener("click", stop);
+startBtn?.addEventListener("click", start);
+sentenceTranslateBtn?.addEventListener("click", startSingleSentenceTurn);
+stopBtn?.addEventListener("click", stop);
 
-clearBtn.addEventListener("click", () => {
-  historyList.innerHTML = "";
-  const config = LANG_CONFIGS[selectedLang];
-  sourceText.textContent = config.sourcePlaceholder;
-  target1Text.textContent = config.target1.placeholder;
-  target2Text.textContent = config.target2.placeholder;
+clearBtn?.addEventListener("click", () => {
+  stopTts();
+  if (historyList) historyList.innerHTML = "";
   currentSource = "";
   currentTarget1 = "";
   currentTarget2 = "";
-  committedSourceLines = [];
-  committedTarget1Lines = [];
-  committedTarget2Lines = [];
-  turnActive1 = false;
-  turnActive2 = false;
+  committedCurrent = null;
+  allSpokenSourceLines = [];
+  prevSourceLines = [];
+  prevTarget1Lines = [];
+  prevTarget2Lines = [];
+  pendingShiftedTurn = null;
+  if (currentTtsText) {
+    currentTtsText.textContent = "문장 번역이 완료되면 자동으로 음성이 출력됩니다.";
+  }
+  refreshAllPanels();
+  updateTranslationButtonsUI();
 
   emitListenerEvent({
     type: "clear",
   });
 });
 
-fontSizeEl.addEventListener("input", () => {
-  const size = `${fontSizeEl.value}px`;
-  target1Text.style.fontSize = size;
-  target2Text.style.fontSize = size;
+fontSizeEl?.addEventListener("input", () => {
+  const sizeNum = Number(fontSizeEl.value);
+  const currentPx = `${sizeNum}px`;
+  const prevPx = `${Math.max(15, sizeNum - 8)}px`;
+  if (target1CurrentText) target1CurrentText.style.fontSize = currentPx;
+  if (target2CurrentText) target2CurrentText.style.fontSize = currentPx;
+  document.querySelectorAll(".target-prev-list .prev-sentence-item").forEach((el) => {
+    el.style.fontSize = prevPx;
+  });
 });
 
-fullscreenBtn.addEventListener("click", async () => {
+fullscreenBtn?.addEventListener("click", async () => {
   if (!document.fullscreenElement) {
     await document.documentElement.requestFullscreen();
   } else {
@@ -1415,12 +2120,36 @@ fullscreenBtn.addEventListener("click", async () => {
   }
 });
 
-/* ─── Panel Toggle Event Listeners ─── */
 toggleSourceBtn?.addEventListener("click", () => togglePanel("source"));
 toggleTarget1Btn?.addEventListener("click", () => togglePanel("target1"));
 toggleTarget2Btn?.addEventListener("click", () => togglePanel("target2"));
+translationOnlyBtn?.addEventListener("click", toggleTranslationOnlyMode);
+optimizeScreenBtn?.addEventListener("click", toggleScreenOptimization);
 
-// Initial setup
+preset2PartBtn?.addEventListener("click", () => {
+  panelVisibility.source = true;
+  if (panelVisibility.target1 && !panelVisibility.target2) {
+    // 번역 2로 전환 (원문 + 번역 2 : 2개 부분만 표시)
+    panelVisibility.target1 = false;
+    panelVisibility.target2 = true;
+  } else {
+    // 번역 1로 전환 (원문 + 번역 1 : 2개 부분만 표시)
+    panelVisibility.target1 = true;
+    panelVisibility.target2 = false;
+  }
+  updatePanelVisibility();
+});
+
+preset3PartBtn?.addEventListener("click", () => {
+  // 세부분 모드: 원문 + 번역 1 + 번역 2 (세부분 표시)
+  panelVisibility.source = true;
+  panelVisibility.target1 = true;
+  panelVisibility.target2 = true;
+  updatePanelVisibility();
+});
+
+// Initial Setup
 setLanguage(selectedLang);
+applyScreenOptimization();
 updatePanelVisibility();
-
+updateTranslationButtonsUI();

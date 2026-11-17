@@ -6,67 +6,138 @@
   <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
   <meta http-equiv="Pragma" content="no-cache">
   <meta http-equiv="Expires" content="0">
-  <title>실시간 다국어 라이브 자막 (KO · EN · VI)</title>
+  <title>실시간 다국어 통역 &amp; AI TTS 통합 서비스 (KO · EN · VI)</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@500;600;700;800&family=Noto+Sans+KR:wght@400;500;700;800&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="/style.css?v=3.6.0">
+  <link rel="stylesheet" href="/style.css?v=4.1.0">
 </head>
 <body>
   <main class="app">
+    <!-- Top Header -->
     <header class="topbar">
       <div class="brand">
-        <div class="eyebrow">AI REAL-TIME MULTILINGUAL LIVE CAPTION</div>
+        <div class="eyebrow">AI REAL-TIME MULTILINGUAL TRANSLATION &amp; NEURAL TTS</div>
         <h1 id="mainTitle">🇰🇷 한국어 → 🇻🇳 베트남어 · 🇺🇸 영어</h1>
       </div>
       <div class="topbar-actions">
-        <div id="status" class="status idle">대기 중</div>
-        <a href="/listener.html" target="_blank" rel="noopener noreferrer" id="listenerOpenBtn" class="listener-open-btn" title="청취자 전용 페이지 열기 (선택 언어 실시간 TTS 음성 제공)">
-          <span class="btn-icon">🎧</span>
-          <span class="btn-label">청취자 모드 (TTS)</span>
-          <span class="external-icon">↗</span>
-        </a>
-        <button id="historyModalBtn" class="history-toggle-btn" title="번역 기록 보기" type="button" aria-label="번역 기록 열기">
+        <div id="status" class="status idle">대기 중 (번역 시작 버튼을 누르세요)</div>
+        <button id="historyModalBtn" class="history-toggle-btn" title="전체 번역 기록 보기" type="button" aria-label="번역 기록 열기">
           <span class="btn-icon">📜</span>
-          <span class="btn-label">번역 기록</span>
+          <span class="btn-label">전체 기록</span>
           <span id="timerBadge" class="timer-badge">00:00</span>
         </button>
         <button id="themeToggleBtn" class="theme-toggle-btn" title="밤 모드 켜기/끄기" type="button" aria-label="밤 모드 토글">
           <span id="themeIcon" class="theme-icon">🌙</span>
           <span id="themeLabel" class="theme-label">밤 모드</span>
         </button>
+        <button id="fullscreenBtn" class="fullscreen-top-btn" type="button" title="전체화면 전환">⛶ 전체화면</button>
       </div>
     </header>
 
-    <!-- Language Selector Buttons -->
-    <section class="lang-selector-section">
-      <div class="lang-selector-label">🗣️ 발화 언어 선택 (말씀하실 언어를 선택하세요):</div>
-      <div class="lang-btn-group" role="radiogroup" aria-label="발화 언어 선택">
-        <button id="langKoBtn" class="lang-btn active" data-lang="ko" type="button">
-          <span class="flag">🇰🇷</span>
-          <span class="btn-text">
-            <strong>한국어로 말하기</strong>
-            <small>→ 베트남어 & 영어 번역</small>
-          </span>
-        </button>
-        <button id="langEnBtn" class="lang-btn" data-lang="en" type="button">
-          <span class="flag">🇺🇸</span>
-          <span class="btn-text">
-            <strong>Speak in English</strong>
-            <small>→ 베트남어 & 한국어 번역</small>
-          </span>
-        </button>
-        <button id="langViBtn" class="lang-btn" data-lang="vi" type="button">
-          <span class="flag">🇻🇳</span>
-          <span class="btn-text">
-            <strong>Nói Tiếng Việt</strong>
-            <small>→ 영어 & 한국어 번역</small>
-          </span>
-        </button>
+    <!-- Unified Top Configuration Grid: Left = 발화 언어 선택 | Right = 통합 TTS 음성 설정 -->
+    <section class="top-config-grid">
+      <!-- 1. Speaker Language Selector -->
+      <div class="lang-selector-section">
+        <div class="section-mini-header">
+          <span class="lang-selector-label">🗣️ 발화 언어 선택 (말씀하실 언어):</span>
+        </div>
+        <div class="lang-btn-group" role="radiogroup" aria-label="발화 언어 선택">
+          <button id="langKoBtn" class="lang-btn active" data-lang="ko" type="button">
+            <span class="flag">🇰🇷</span>
+            <span class="btn-text">
+              <strong>한국어로 말하기</strong>
+              <small>→ 베트남어 &amp; 영어 번역</small>
+            </span>
+          </button>
+          <button id="langEnBtn" class="lang-btn" data-lang="en" type="button">
+            <span class="flag">🇺🇸</span>
+            <span class="btn-text">
+              <strong>Speak in English</strong>
+              <small>→ 베트남어 &amp; 한국어 번역</small>
+            </span>
+          </button>
+          <button id="langViBtn" class="lang-btn" data-lang="vi" type="button">
+            <span class="flag">🇻🇳</span>
+            <span class="btn-text">
+              <strong>Nói Tiếng Việt</strong>
+              <small>→ 영어 &amp; 한국어 번역</small>
+            </span>
+          </button>
+        </div>
+      </div>
+
+      <!-- 2. Integrated TTS Control Panel (번역 화면 + TTS 화면 통합) -->
+      <div class="tts-integrated-section">
+        <div class="tts-bar-top">
+          <div class="tts-title-group">
+            <span class="tts-badge-icon">🔊</span>
+            <strong class="tts-bar-title">통합 AI 음성(TTS) 설정</strong>
+            <label class="tts-auto-switch" title="문장 번역 완료 시 자동으로 AI 음성(TTS)을 출력합니다">
+              <input type="checkbox" id="autoTtsToggle" checked>
+              <span class="switch-slider"></span>
+              <span class="switch-text">자동 TTS 읽기</span>
+            </label>
+          </div>
+
+          <!-- TTS 출력 대상 선택 (번역1 / 번역2 / 번역1+2 순차) -->
+          <div class="tts-target-group" role="radiogroup" aria-label="TTS 출력 언어 선택">
+            <span class="tts-sub-label">TTS 언어:</span>
+            <button id="ttsModeT1Btn" class="tts-lang-pill active" data-tts-mode="target1" type="button" title="번역 1 언어로 음성 출력">
+              🇻🇳 베트남어 (번역1)
+            </button>
+            <button id="ttsModeT2Btn" class="tts-lang-pill" data-tts-mode="target2" type="button" title="번역 2 언어로 음성 출력">
+              🇺🇸 영어 (번역2)
+            </button>
+            <button id="ttsModeBothBtn" class="tts-lang-pill" data-tts-mode="both" type="button" title="번역 1과 번역 2를 순서대로 모두 음성 출력">
+              🔊 번역 1+2 연속
+            </button>
+          </div>
+
+          <!-- TTS Speaking Waveform Indicator -->
+          <div id="ttsSpeakingIndicator" class="speaking-indicator inactive" title="TTS 음성 출력 상태">
+            <span class="wave-bar"></span>
+            <span class="wave-bar"></span>
+            <span class="wave-bar"></span>
+            <span class="wave-bar"></span>
+            <span class="wave-bar"></span>
+            <span id="ttsStatusLabel" class="speaking-text">TTS 대기</span>
+          </div>
+        </div>
+
+        <div class="tts-bar-bottom">
+          <div class="tts-voice-wrap">
+            <label for="voiceSelect" class="tts-sub-label">🎤 목소리:</label>
+            <select id="voiceSelect" class="voice-select" title="자연스러운 신경망 AI 목소리 선택">
+              <option value="">AI 목소리 로딩 중...</option>
+            </select>
+          </div>
+
+          <div class="tts-sliders-wrap">
+            <label class="tts-slider-item" title="TTS 읽기 속도 조절">
+              <span>속도 <b id="rateValue">1.0x</b></span>
+              <input type="range" id="ttsRate" min="0.7" max="1.5" step="0.05" value="1.0">
+            </label>
+            <label class="tts-slider-item" title="TTS 음높이 조절">
+              <span>음높이 <b id="pitchValue">1.0</b></span>
+              <input type="range" id="ttsPitch" min="0.7" max="1.4" step="0.05" value="1.0">
+            </label>
+            <label class="tts-slider-item" title="TTS 볼륨 조절">
+              <span>볼륨 <b id="volumeValue">100%</b></span>
+              <input type="range" id="ttsVolume" min="0" max="1" step="0.05" value="1.0">
+            </label>
+          </div>
+
+          <div class="tts-action-btns">
+            <button id="testVoiceBtn" class="btn-tts-mini" type="button" title="선택한 AI 목소리 샘플 듣기">▶ 미리듣기</button>
+            <button id="replayCurrentTtsBtn" class="btn-tts-mini" type="button" title="현시점 번역 문장 다시 듣기">🔊 다시듣기</button>
+            <button id="stopTtsBtn" class="btn-tts-mini stop" type="button" title="TTS 음성 즉시 정지">⏹ 음성정지</button>
+          </div>
+        </div>
       </div>
     </section>
 
-    <!-- Control Bar -->
+    <!-- Control Bar: 마이크 + 2단계 번역 버튼 (1. 번역 시작 / 2. 문장 번역) + 창 표시 제어 -->
     <section class="controlbar">
       <div class="mic-wrapper">
         <label for="micSelect" class="mic-label">🎙️ 마이크:</label>
@@ -78,7 +149,36 @@
           <div id="micMeterBar" class="mic-meter-bar"></div>
         </div>
       </div>
-      <!-- 창 표시/숨김 토글 버튼 3개 (원문, 번역언어1, 번역언어2) -->
+
+      <!-- 2개로 구분된 번역 제어 버튼 그룹 -->
+      <div class="translation-btn-group" role="group" aria-label="2단계 문장 번역 제어">
+        <!-- 버튼 1: 번역 시작 (세션 연결 활성화) -->
+        <button id="startBtn" class="btn-start-session" type="button" title="1단계: 번역 세션을 시작합니다">
+          🚀 1. 번역 시작
+        </button>
+        <!-- 버튼 2: 문장 번역 (번역 시작 후 한 문장씩 번역할 때만 눌러서 작동) -->
+        <button id="sentenceTranslateBtn" class="btn-sentence-translate" type="button" disabled title="2단계: 한 문장을 말하고 번역 및 TTS를 진행할 때마다 누르세요">
+          🗣️ 2. 문장 번역 (한 문장 말하기)
+        </button>
+        <!-- 세션 중지 버튼 -->
+        <button id="stopBtn" class="btn-stop-session" disabled type="button" title="번역 세션 종료">
+          ⏹ 중지
+        </button>
+      </div>
+
+      <button id="clearBtn" type="button" title="화면의 현시점 문장 및 직전 문장 지우기">🧹 화면 지우기</button>
+
+      <!-- 특정한 버튼 1: 화면 최적화 버튼 (상단 헤더, 발화언어선택, AI음성, 마이크설정 등을 숨김) -->
+      <button id="optimizeScreenBtn" class="btn-optimize-screen" type="button" title="화면 최적화: 상단 헤더, 발화언어선택, AI음성, 마이크설정 등을 숨기고 원문/번역창만 크게 표시합니다">
+        🖥️ 화면 최적화 (상단 숨김)
+      </button>
+
+      <!-- 특정한 버튼 2: 번역문장만 보기 전용 토글 버튼 -->
+      <button id="translationOnlyBtn" class="btn-translation-only" type="button" title="원문 창을 숨기고 번역문장 창만 화면 가득 표시합니다">
+        🌐 번역문장만 보기
+      </button>
+
+      <!-- 창 표시/숨김 토글 버튼 (원문, 번역언어1, 번역언어2 및 2분할/3분할 선택) -->
       <div class="panel-toggle-wrapper" role="group" aria-label="창 표시 제어">
         <span class="panel-toggle-label">창 표시:</span>
         <button id="toggleSourceBtn" class="panel-toggle-btn active" type="button" title="원문 창 표시/숨기기" aria-pressed="true">
@@ -93,51 +193,123 @@
           <span class="toggle-icon">👁️</span>
           <span id="toggleTarget2Text">번역 2</span>
         </button>
+        <button id="preset2PartBtn" class="panel-toggle-btn preset-btn" type="button" title="원문 + 선택 번역 1개 (2개 부분만 표시)">
+          2분할
+        </button>
+        <button id="preset3PartBtn" class="panel-toggle-btn preset-btn" type="button" title="원문 + 번역 1 + 번역 2 (세부분 표시)">
+          3분할
+        </button>
       </div>
-      <button id="startBtn" class="primary" type="button">🎤 번역 시작</button>
-      <button id="stopBtn" disabled type="button">⏹ 중지</button>
-      <button id="clearBtn" type="button">🧹 화면 지우기</button>
-      <a href="/listener.html" target="_blank" rel="noopener noreferrer" class="control-listener-link" title="청취자 전용 페이지 새 창 열기 (TTS)">🎧 청취자 화면</a>
+
       <label class="font-control">
         자막 크기
-        <input id="fontSize" type="range" min="22" max="60" value="34">
+        <input id="fontSize" type="range" min="20" max="52" value="28">
       </label>
-      <button id="fullscreenBtn" type="button">⛶ 전체화면</button>
     </section>
 
-    <!-- Panels Layout: Top = 2 Translations (50% / 50%) | Bottom = Original Speech (100% full width) -->
+    <!-- Panels Layout: Top = 2 Translations (50% / 50%) | Bottom = Original Speech + Current TTS Info (100%) -->
     <section class="panels">
       <!-- Top Left: Translation 1 -->
       <article id="target1Panel" class="panel panel-target-1" data-target-lang="vi">
         <div class="panel-header">
           <span id="target1Label" class="label">🇻🇳 TIẾNG VIỆT (베트남어 번역)</span>
-          <span class="panel-badge target-badge">실시간 번역</span>
+          <div class="panel-header-right">
+            <button id="speakTarget1Btn" class="btn-panel-tts" type="button" title="이 번역 문장을 TTS 음성으로 듣기">🔊 TTS 듣기</button>
+            <span class="panel-badge target-badge">실시간 번역</span>
+          </div>
         </div>
-        <div id="target1Text" class="text target-text">베트남어 번역이 여기에 실시간으로 표시됩니다.</div>
+
+        <div class="panel-sentence-container">
+          <!-- 현시점의 문장 (1개) -->
+          <div class="sentence-current-box">
+            <div class="sentence-box-header">
+              <span class="box-tag current-tag">▶ 현시점 문장</span>
+              <span id="target1TtsActiveBadge" class="tts-active-tag">🔊 TTS 출력 언어</span>
+            </div>
+            <div id="target1CurrentText" class="text target-text current-text">
+              [1. 번역 시작] 후 [2. 문장 번역] 버튼을 누르고 한 문장을 말씀하세요.
+            </div>
+          </div>
+
+          <!-- 직전 문장 (1개만 표시 · 현시점 1개와 함께 총 2개 문장 유지) -->
+          <div class="sentence-prev-box">
+            <div class="sentence-box-header">
+              <span class="box-tag prev-tag">📜 직전 문장 (1개 · 현문장 포함 총 2문장)</span>
+              <span id="target1PrevCount" class="prev-count-badge">0 / 1문장</span>
+            </div>
+            <div id="target1PrevList" class="prev-sentences-list target-prev-list">
+              <div class="prev-empty-placeholder">바로 직전에 번역된 문장이 여기에 표시됩니다 (현문장 포함 총 2문장).</div>
+            </div>
+          </div>
+        </div>
       </article>
 
       <!-- Top Right: Translation 2 -->
       <article id="target2Panel" class="panel panel-target-2" data-target-lang="en">
         <div class="panel-header">
           <span id="target2Label" class="label">🇺🇸 ENGLISH (영어 번역)</span>
-          <span class="panel-badge target-badge">실시간 번역</span>
+          <div class="panel-header-right">
+            <button id="speakTarget2Btn" class="btn-panel-tts" type="button" title="이 번역 문장을 TTS 음성으로 듣기">🔊 TTS 듣기</button>
+            <span class="panel-badge target-badge">실시간 번역</span>
+          </div>
         </div>
-        <div id="target2Text" class="text target-text">영어 번역이 여기에 실시간으로 표시됩니다.</div>
+
+        <div class="panel-sentence-container">
+          <!-- 현시점의 문장 (1개) -->
+          <div class="sentence-current-box">
+            <div class="sentence-box-header">
+              <span class="box-tag current-tag">▶ 현시점 문장</span>
+              <span id="target2TtsActiveBadge" class="tts-active-tag hidden">🔊 TTS 출력 언어</span>
+            </div>
+            <div id="target2CurrentText" class="text target-text current-text">
+              [1. 번역 시작] 후 [2. 문장 번역] 버튼을 누르고 한 문장을 말씀하세요.
+            </div>
+          </div>
+
+          <!-- 직전 문장 (1개만 표시 · 현시점 1개와 함께 총 2개 문장 유지) -->
+          <div class="sentence-prev-box">
+            <div class="sentence-box-header">
+              <span class="box-tag prev-tag">📜 직전 문장 (1개 · 현문장 포함 총 2문장)</span>
+              <span id="target2PrevCount" class="prev-count-badge">0 / 1문장</span>
+            </div>
+            <div id="target2PrevList" class="prev-sentences-list target-prev-list">
+              <div class="prev-empty-placeholder">바로 직전에 번역된 문장이 여기에 표시됩니다 (현문장 포함 총 2문장).</div>
+            </div>
+          </div>
+        </div>
       </article>
 
-      <!-- Bottom Full Width: Original Speech Source -->
+      <!-- Bottom Full Width: Original Speech Source + Current TTS Status -->
       <article id="sourcePanel" class="panel panel-source">
         <div class="panel-header">
           <span id="sourceLabel" class="label">🇰🇷 한국어 원문 (발화)</span>
-          <span class="panel-badge source-badge">음성 인식</span>
+          <div class="panel-header-right">
+            <div id="currentTtsBanner" class="current-tts-inline-banner">
+              <span class="tts-banner-label">🔊 현재 TTS 출력:</span>
+              <span id="currentTtsText" class="tts-banner-text">문장 번역이 완료되면 자동으로 음성이 출력됩니다.</span>
+            </div>
+            <span id="sourcePrevCount" class="prev-count-badge">2문장 표시 (직전+현문장)</span>
+            <span class="panel-badge source-badge">음성 인식</span>
+          </div>
         </div>
-        <div id="sourceText" class="text source-text">마이크를 시작하고 말씀하시면 음성이 여기에 인식됩니다.</div>
+
+        <div class="source-continuous-container">
+          <!-- 말한 문장 중 직전 문장과 현문장 2개만 화면에 표시되는 영역 -->
+          <div id="sourceCurrentText" class="text source-text source-history-stream">
+            <div class="source-placeholder-msg">[1. 번역 시작] 후 [2. 문장 번역] 버튼을 누르고 말씀하세요 (직전 1문장 + 현문장 총 2문장 표시).</div>
+          </div>
+
+          <!-- 문장 번역 시 기존 문장 아래 하단에 추가로 표시되는 안내 문구 -->
+          <div id="sourceListeningPrompt" class="source-listening-prompt hidden">
+            🎙️ 듣고 있습니다. 한 문장을 말씀하세요...
+          </div>
+        </div>
       </article>
     </section>
 
     <!-- Always Visible 1-Line Footer -->
     <footer class="app-footer">
-      Gemini 3.5 Live Translate · 3-Way Real-time Caption (🇰🇷 한국어 ⇄ 🇺🇸 English ⇄ 🇻🇳 Tiếng Việt) v3.5.0
+      Gemini 3.5 Live Translate &amp; Neural TTS 통합 화면 · 한 문장씩 수동/자동 번역 제어 · 직전 1문장+현문장(2문장) 최적 표시 · 화면 최적화 지원 (v4.3)
     </footer>
   </main>
 
@@ -147,7 +319,7 @@
       <div class="history-modal-header">
         <div class="modal-title-group">
           <span class="modal-icon">📜</span>
-          <h2 id="modalTitle" class="modal-title">번역 기록 (Translation History)</h2>
+          <h2 id="modalTitle" class="modal-title">전체 번역 기록 (Translation History)</h2>
           <span id="timer" class="timer-display">00:00</span>
         </div>
         <div class="modal-actions">
@@ -161,6 +333,6 @@
     </div>
   </div>
 
-  <script src="/app.js?v=3.8.0"></script>
+  <script src="/app.js?v=4.1.0"></script>
 </body>
 </html>
