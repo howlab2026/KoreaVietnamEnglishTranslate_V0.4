@@ -1679,10 +1679,19 @@ function lockMicrophoneForSingleSentence() {
 
   setMicHardwareEnabled(false);
   updateTranslationButtonsUI();
-  setStatus("⚡ 번역 확정 중...", "standby");
+  setStatus("⚡ 완전한 문장 번역 확정 중...", "standby");
 
-  // 발화 종료 즉시 지연 없이 고속 확정 (기존 850ms -> 200ms)
-  scheduleSingleSentenceFinalize(200);
+  // Gemini Live에 발화 종료 신호(audioStreamEnd)를 즉시 전송해 잔여 번역 토큰을 빠르게 플러시
+  const endSignal = JSON.stringify({ realtimeInput: { audioStreamEnd: true } });
+  if (ws1 && ws1.readyState === WebSocket.OPEN && isReady1) {
+    try { ws1.send(endSignal); } catch (_) {}
+  }
+  if (ws2 && ws2.readyState === WebSocket.OPEN && isReady2) {
+    try { ws2.send(endSignal); } catch (_) {}
+  }
+
+  // 양쪽 번역이 모두 완료되었으면 즉시 확정, 아직 진행 중이면 문장이 끊기지 않도록 최대 1400ms 대기
+  scheduleSingleSentenceFinalize(ws1TurnDone && ws2TurnDone ? 100 : 1400);
 }
 
 function scheduleSingleSentenceFinalize(delayMs = 200) {
@@ -1849,11 +1858,11 @@ async function startMicrophone() {
       const hasRecognizedText = currentSource.trim().length >= 2;
       const hasTranslationText = (currentTarget1.trim().length > 0 || currentTarget2.trim().length > 0);
 
-      // 발화 후 침묵 감지 최적화: 번역 텍스트가 이미 생성 중이면 280ms, 인식 텍스트 있으면 350ms 만에 즉시 확정
+      // 발화 중 단어 사이 짧은 숨 고르기로 문장이 잘리지 않도록 충분한 침묵(480~750ms) 감지 후 종료
       if (
-        (hasTranslationText && silenceDuration >= 280) ||
-        (hasRecognizedText && silenceDuration >= 350) ||
-        (spokenDuration >= 200 && silenceDuration >= 450)
+        (hasTranslationText && silenceDuration >= 480) ||
+        (hasRecognizedText && silenceDuration >= 580) ||
+        (spokenDuration >= 300 && silenceDuration >= 750)
       ) {
         lockMicrophoneForSingleSentence();
         return;
@@ -2045,7 +2054,7 @@ function createTranslationWebSockets(wsUrl, config, onBothReady, onError) {
       refreshAllPanels();
       emitThrottledStreamUpdate();
       if (turnState === "finalizing") {
-        scheduleSingleSentenceFinalize(180);
+        scheduleSingleSentenceFinalize(ws1TurnDone && ws2TurnDone ? 80 : 650);
       }
     }
 
@@ -2054,10 +2063,10 @@ function createTranslationWebSockets(wsUrl, config, onBothReady, onError) {
       refreshAllPanels();
       emitThrottledStreamUpdate();
 
-      if (turnState === "listening" && lastVoiceAt > 0 && Date.now() - lastVoiceAt >= 250) {
+      if (turnState === "listening" && lastVoiceAt > 0 && Date.now() - lastVoiceAt >= 480) {
         lockMicrophoneForSingleSentence();
       } else if (turnState === "finalizing") {
-        scheduleSingleSentenceFinalize(ws2TurnDone ? 80 : 180);
+        scheduleSingleSentenceFinalize(ws1TurnDone && ws2TurnDone ? 80 : 650);
       }
     }
 
@@ -2065,9 +2074,8 @@ function createTranslationWebSockets(wsUrl, config, onBothReady, onError) {
       ws1TurnDone = true;
       if (turnState === "listening") {
         lockMicrophoneForSingleSentence();
-      }
-      if (turnState === "finalizing") {
-        scheduleSingleSentenceFinalize(ws2TurnDone || currentTarget2.trim().length > 0 ? 60 : 180);
+      } else if (turnState === "finalizing") {
+        scheduleSingleSentenceFinalize(ws2TurnDone ? 80 : 650);
       }
     }
   };
@@ -2117,10 +2125,10 @@ function createTranslationWebSockets(wsUrl, config, onBothReady, onError) {
       refreshAllPanels();
       emitThrottledStreamUpdate();
 
-      if (turnState === "listening" && lastVoiceAt > 0 && Date.now() - lastVoiceAt >= 250) {
+      if (turnState === "listening" && lastVoiceAt > 0 && Date.now() - lastVoiceAt >= 480) {
         lockMicrophoneForSingleSentence();
       } else if (turnState === "finalizing") {
-        scheduleSingleSentenceFinalize(ws1TurnDone ? 80 : 180);
+        scheduleSingleSentenceFinalize(ws1TurnDone && ws2TurnDone ? 80 : 650);
       }
     }
 
@@ -2128,9 +2136,8 @@ function createTranslationWebSockets(wsUrl, config, onBothReady, onError) {
       ws2TurnDone = true;
       if (turnState === "listening") {
         lockMicrophoneForSingleSentence();
-      }
-      if (turnState === "finalizing") {
-        scheduleSingleSentenceFinalize(ws1TurnDone || currentTarget1.trim().length > 0 ? 60 : 180);
+      } else if (turnState === "finalizing") {
+        scheduleSingleSentenceFinalize(ws1TurnDone ? 80 : 650);
       }
     }
   };

@@ -153,6 +153,41 @@ async function synthesizeOnce(text, voice, rate, pitch) {
   });
 }
 
+const VOICE_GENDER_MAP = new Map(
+  Object.values(NEURAL_VOICES).flat().map((v) => [v.id, v.gender])
+);
+
+async function fetchGeminiTtsFallback(text, voice) {
+  if (!GEMINI_API_KEY) throw new Error("GEMINI_API_KEY missing");
+  const gender = VOICE_GENDER_MAP.get(voice) || "Female";
+  const geminiVoice = gender === "Male" ? "Charon" : "Kore";
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash-lite-tts:generateContent?key=${encodeURIComponent(GEMINI_API_KEY)}`;
+  const res = await fetch(url, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      contents: [{ parts: [{ text: String(text || "").slice(0, 400) }] }],
+      generationConfig: {
+        responseModalities: ["AUDIO"],
+        speechConfig: {
+          voiceConfig: {
+            prebuiltVoiceConfig: { voiceName: geminiVoice },
+          },
+        },
+      },
+    }),
+  });
+  if (!res.ok) throw new Error(`Gemini TTS HTTP ${res.status}`);
+  const data = await res.json();
+  const inline = data.candidates?.[0]?.content?.parts?.[0]?.inlineData;
+  if (!inline?.data) throw new Error("Gemini TTS empty data");
+  return {
+    buffer: Buffer.from(inline.data, "base64"),
+    contentType: inline.mimeType || "audio/wav",
+    provider: `gemini-tts(${geminiVoice})`,
+  };
+}
+
 async function fetchGoogleTtsFallback(text, voice) {
   const tl = voice.startsWith("vi") ? "vi" : voice.startsWith("en") ? "en" : "ko";
   const q = String(text || "").slice(0, 200);
@@ -166,21 +201,29 @@ async function fetchGoogleTtsFallback(text, voice) {
   const arr = await res.arrayBuffer();
   const buf = Buffer.from(arr);
   if (!buf.length) throw new Error("Fallback TTS empty audio");
-  return buf;
+  return { buffer: buf, contentType: "audio/mpeg", provider: "google-fallback" };
 }
 
 async function synthesizeWithRetry(text, voice, rate, pitch) {
   let lastErr;
   for (let attempt = 0; attempt <= TTS_RETRY_COUNT; attempt++) {
     try {
-      return await synthesizeOnce(text, voice, rate, pitch);
+      const buf = await synthesizeOnce(text, voice, rate, pitch);
+      return { buffer: buf, contentType: "audio/mpeg", provider: `msedge(${voice})` };
     } catch (err) {
       lastErr = err;
       resetTtsClient(voice);
       await new Promise((r) => setTimeout(r, 150 * (attempt + 1)));
     }
   }
-  // Edge TTS WebSocket이 차단되거나 실패한 경우(클라우드/서버리스 등) Google TTS MP3로 폴백
+  // Edge TTS WebSocket이 차단/실패한 경우(클라우드/서버리스 등):
+  // 1순위: 성별(남성/여성)이 정확히 유지되는 Gemini Neural TTS 폴백
+  try {
+    return await fetchGeminiTtsFallback(text, voice);
+  } catch (geminiErr) {
+    console.warn("Gemini TTS fallback failed:", geminiErr?.message || geminiErr);
+  }
+  // 2순위: Google TTS MP3 폴백
   try {
     return await fetchGoogleTtsFallback(text, voice);
   } catch (fallbackErr) {
@@ -265,10 +308,12 @@ app.get("/api/tts", async (req, res) => {
     }
   }
 
-  res.setHeader("Content-Type", "audio/mpeg");
-  res.setHeader("Content-Length", audio.length);
-  res.setHeader("Cache-Control", "public, max-age=86400");
-  res.end(audio);
+  const buf = audio.buffer || audio;
+  res.setHeader("Content-Type", audio.contentType || "audio/mpeg");
+  res.setHeader("Content-Length", buf.length);
+  res.setHeader("X-TTS-Provider", audio.provider || "unknown");
+  res.setHeader("Cache-Control", "private, max-age=300");
+  res.end(buf);
 });
 
 /**
