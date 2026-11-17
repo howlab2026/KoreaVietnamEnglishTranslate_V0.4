@@ -13,6 +13,41 @@
   <link rel="stylesheet" href="/style.css?v=4.1.0">
 </head>
 <body>
+  <!-- 보안 인증 모달 오버레이 (인증번호 2026 필수 입력) -->
+  <div id="authOverlay" class="auth-overlay">
+    <div class="auth-card">
+      <div class="auth-icon-wrap">
+        <span class="auth-icon">🔒</span>
+      </div>
+      <h2 class="auth-title">보안 접근 인증</h2>
+      <p class="auth-desc">
+        다국어 실시간 통역 서비스에 접속하려면<br>
+        <strong>보안 인증번호 (PIN 4자리)</strong>를 입력하세요.
+      </p>
+      <form id="authForm" class="auth-form" onsubmit="return false;">
+        <div class="auth-input-wrap">
+          <input
+            id="authPinInput"
+            type="password"
+            inputmode="numeric"
+            pattern="[0-9]*"
+            maxlength="4"
+            placeholder="••••"
+            autocomplete="off"
+            autofocus
+            required
+          >
+        </div>
+        <div id="authErrorMsg" class="auth-error-msg hidden">
+          ⚠️ 인증번호가 올바르지 않습니다. 다시 입력해주세요.
+        </div>
+        <button id="authSubmitBtn" class="btn-auth-submit" type="submit">
+          인증 확인 및 시작
+        </button>
+      </form>
+    </div>
+  </div>
+
   <main class="app">
     <!-- Top Header -->
     <header class="topbar">

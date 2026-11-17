@@ -178,6 +178,10 @@ app.get("/api/tts", async (req, res) => {
  * - SPEAKER_TOKEN 설정 시: 토큰이 일치하는 클라이언트만 화자 권한
  * - 미설정 시: 동일 출처(Origin) 접속 허용 (로컬 및 Vercel 클라우드 배포 환경 모두 지원)
  */
+/**
+ * 화자(Speaker) 및 사용자 보안 인증 (인증번호 2026 기반)
+ */
+const AUTH_PIN = process.env.AUTH_PIN || "2026";
 const SPEAKER_TOKEN = process.env.SPEAKER_TOKEN || "";
 const GEMINI_WS_URL =
   "wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1alpha.GenerativeService.BidiGenerateContent";
@@ -192,36 +196,64 @@ function sameOrigin(req) {
   const origin = req.headers.origin;
   if (!origin) return true;
   try {
-    return new URL(origin).host === req.headers.host;
+    const originHost = new URL(origin).host;
+    const reqHost = req.headers["x-forwarded-host"] || req.headers.host;
+    return originHost === reqHost;
   } catch {
-    return false;
+    return true;
   }
 }
 
-function isSpeakerAuthorized(req, token) {
-  if (!sameOrigin(req)) return false;
-  if (SPEAKER_TOKEN) return typeof token === "string" && safeEqual(token, SPEAKER_TOKEN);
-  return true;
+function isSpeakerAuthorized(req, tokenOrPin) {
+  const val = String(tokenOrPin || "").trim();
+  // 1. 인증번호 2026 통과
+  if (val === AUTH_PIN) return true;
+  // 2. SPEAKER_TOKEN 통과
+  if (SPEAKER_TOKEN && safeEqual(val, SPEAKER_TOKEN)) return true;
+  // 3. 보안 인증번호(AUTH_PIN) 및 SPEAKER_TOKEN이 모두 비활성화된 경우에만 로컬호스트 허용
+  if (!AUTH_PIN && !SPEAKER_TOKEN) {
+    const host = String(req.headers["x-forwarded-host"] || req.headers.host || "");
+    if (host.startsWith("localhost") || host.startsWith("127.0.0.1")) {
+      return true;
+    }
+  }
+  return false;
 }
 
-/** 화자 화면이 토큰 입력이 필요한지 / 현재 접속이 허용되는지 안내 (비밀 값은 반환하지 않음) */
-app.get("/api/speaker-status", (_req, res) => {
+/**
+ * POST /api/auth
+ * 인증번호 2026 검증 엔드포인트
+ */
+app.post("/api/auth", (req, res) => {
+  const pin = String(req.body?.pin || req.query.pin || "").trim();
+  if (pin === AUTH_PIN || (SPEAKER_TOKEN && safeEqual(pin, SPEAKER_TOKEN))) {
+    return res.json({ ok: true, pin: AUTH_PIN });
+  }
+  return res.status(401).json({ ok: false, error: "인증번호가 올바르지 않습니다 (2026을 입력하세요)." });
+});
+
+/** 화자 화면이 토큰 입력이 필요한지 / 현재 접속이 허용되는지 안내 */
+app.get("/api/speaker-status", (req, res) => {
+  const token = String(req.query.pin || req.query.token || req.headers["x-auth-pin"] || req.headers["x-speaker-token"] || "");
+  const authed = isSpeakerAuthorized(req, token);
+  const host = String(req.headers["x-forwarded-host"] || req.headers.host || "");
+  const isRemote = !host.startsWith("localhost") && !host.startsWith("127.0.0.1");
   res.json({
-    tokenRequired: Boolean(SPEAKER_TOKEN),
-    allowed: true,
+    tokenRequired: true,
+    allowed: authed,
     geminiConfigured: Boolean(GEMINI_API_KEY),
-    serverless: IS_VERCEL,
+    serverless: IS_VERCEL || isRemote,
   });
 });
 
 /**
  * GET /api/key
- * Vercel 등 서버리스 환경(WebSocket 프록시 미지원) 및 브라우저 직접 연결을 위한 API 키 엔드포인트
+ * Vercel 등 서버리스 환경 및 브라우저 직접 연결을 위한 API 키 엔드포인트
  */
 app.get("/api/key", (req, res) => {
-  const token = String(req.query.token || req.headers["x-speaker-token"] || "");
+  const token = String(req.query.pin || req.query.token || req.headers["x-auth-pin"] || req.headers["x-speaker-token"] || "");
   if (!isSpeakerAuthorized(req, token)) {
-    return res.status(401).json({ error: "화자 인증 토큰(SPEAKER_TOKEN)이 올바르지 않습니다." });
+    return res.status(401).json({ error: "보안 인증번호(2026)가 올바르지 않습니다." });
   }
   if (!GEMINI_API_KEY) {
     return res.status(500).json({ error: "GEMINI_API_KEY가 설정되어 있지 않습니다. (.env 또는 Vercel 환경변수를 확인하세요)" });

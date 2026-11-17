@@ -121,6 +121,88 @@ const SAMPLE_SENTENCES = {
 
 const $ = (id) => document.getElementById(id);
 
+/* ─── Security PIN 2026 Authentication ─── */
+const AUTH_PIN_REQUIRED = "2026";
+let authPin = "";
+try {
+  authPin = sessionStorage.getItem("kv_auth_pin") || localStorage.getItem("kv_auth_pin") || "";
+} catch (_) {}
+
+const authOverlay = $("authOverlay");
+const authForm = $("authForm");
+const authPinInput = $("authPinInput");
+const authErrorMsg = $("authErrorMsg");
+const authSubmitBtn = $("authSubmitBtn");
+
+function isUserAuthenticated() {
+  return authPin === AUTH_PIN_REQUIRED;
+}
+
+function showAuthOverlay() {
+  if (authOverlay) {
+    authOverlay.classList.remove("hidden");
+    authOverlay.style.display = "flex";
+  }
+  if (authPinInput) {
+    authPinInput.value = "";
+    setTimeout(() => authPinInput.focus(), 100);
+  }
+}
+
+function hideAuthOverlay() {
+  if (authOverlay) {
+    authOverlay.classList.add("hidden");
+    authOverlay.style.display = "none";
+  }
+}
+
+async function handleAuthSubmit(e) {
+  if (e) e.preventDefault();
+  const inputPin = (authPinInput?.value || "").trim();
+  if (inputPin === AUTH_PIN_REQUIRED) {
+    authPin = AUTH_PIN_REQUIRED;
+    try {
+      sessionStorage.setItem("kv_auth_pin", authPin);
+      localStorage.setItem("kv_auth_pin", authPin);
+    } catch (_) {}
+    if (authErrorMsg) authErrorMsg.classList.add("hidden");
+    hideAuthOverlay();
+  } else {
+    try {
+      const res = await fetch("/api/auth", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ pin: inputPin }),
+      });
+      const data = await res.json();
+      if (res.ok && data.ok) {
+        authPin = data.pin || AUTH_PIN_REQUIRED;
+        try {
+          sessionStorage.setItem("kv_auth_pin", authPin);
+          localStorage.setItem("kv_auth_pin", authPin);
+        } catch (_) {}
+        if (authErrorMsg) authErrorMsg.classList.add("hidden");
+        hideAuthOverlay();
+        return;
+      }
+    } catch (_) {}
+
+    if (authErrorMsg) {
+      authErrorMsg.classList.remove("hidden");
+      authErrorMsg.textContent = "⚠️ 인증번호(2026)가 올바르지 않습니다. 다시 입력해주세요.";
+    }
+    if (authPinInput) {
+      authPinInput.classList.add("shake");
+      setTimeout(() => authPinInput.classList.remove("shake"), 500);
+      authPinInput.value = "";
+      authPinInput.focus();
+    }
+  }
+}
+
+authForm?.addEventListener("submit", handleAuthSubmit);
+authSubmitBtn?.addEventListener("click", handleAuthSubmit);
+
 // Header & Modal Elements
 const mainTitle = $("mainTitle");
 const statusEl = $("status");
@@ -429,7 +511,8 @@ try {
 } catch (_) {}
 
 async function fetchSpeakerStatus() {
-  const res = await fetch("/api/speaker-status", { cache: "no-store" });
+  const pinParam = authPin || "2026";
+  const res = await fetch(`/api/speaker-status?pin=${encodeURIComponent(pinParam)}&token=${encodeURIComponent(speakerToken || pinParam)}`, { cache: "no-store" });
   const data = await res.json();
   if (typeof data.serverless === "boolean") {
     isServerlessEnv = data.serverless;
@@ -438,19 +521,11 @@ async function fetchSpeakerStatus() {
 }
 
 async function ensureSpeakerAuth(forcePrompt = false) {
-  const status = await fetchSpeakerStatus();
-  if (status.tokenRequired) {
-    if (forcePrompt || !speakerToken) {
-      const input = (prompt("화자 인증 토큰(SPEAKER_TOKEN)을 입력하세요") || "").trim();
-      if (!input) throw new Error("화자 인증 토큰이 필요합니다.");
-      speakerToken = input;
-      try {
-        sessionStorage.setItem("kv_speaker_token", input);
-      } catch (_) {}
-    }
-  } else if (status.allowed === false) {
-    throw new Error("화자 모드는 서버 PC에서만 사용할 수 있습니다.");
+  if (!isUserAuthenticated()) {
+    showAuthOverlay();
+    throw new Error("보안 인증번호(2026)를 입력해주세요.");
   }
+  const status = await fetchSpeakerStatus();
   return status;
 }
 
@@ -469,10 +544,8 @@ async function connectBroadcastWs() {
     return setTimeout(connectBroadcastWs, 3000);
   }
   if (status.serverless) return;
-  if (!status.tokenRequired && status.allowed === false) return;
-  if (status.tokenRequired && !speakerToken) return setTimeout(connectBroadcastWs, 3000);
-
-  const wsUrl = `${WS_PROTO}//${location.host}/ws/broadcast?role=speaker&token=${encodeURIComponent(speakerToken)}`;
+  const pinParam = authPin || "2026";
+  const wsUrl = `${WS_PROTO}//${location.host}/ws/broadcast?role=speaker&token=${encodeURIComponent(speakerToken || pinParam)}&pin=${encodeURIComponent(pinParam)}`;
   let opened = false;
   try {
     broadcastWs = new WebSocket(wsUrl);
@@ -503,8 +576,9 @@ function emitListenerEvent(payload) {
     try {
       broadcastWs.send(JSON.stringify(payload));
     } catch (_) {}
-  } else if (isServerlessEnv && payload && payload.type !== "stream_update") {
-    fetch(`/api/broadcast?token=${encodeURIComponent(speakerToken)}`, {
+  } else if (payload && payload.type !== "stream_update") {
+    const pinParam = authPin || "2026";
+    fetch(`/api/broadcast?token=${encodeURIComponent(speakerToken || pinParam)}&pin=${encodeURIComponent(pinParam)}`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload),
@@ -1408,44 +1482,67 @@ document.addEventListener("keydown", (e) => {
   }
 });
 
-/* ─── Gemini Proxy URL ─── */
+/* ─── Gemini Proxy / Direct Live WS URL ─── */
 let _cachedApiKey = null;
 async function getGeminiProxyUrl() {
-  const status = await ensureSpeakerAuth();
-  if (status.serverless || !status.geminiConfigured) {
+  const pinParam = authPin || "2026";
+  const isRemote = (location.hostname !== "localhost" && location.hostname !== "127.0.0.1");
+
+  let status = { serverless: isRemote, geminiConfigured: true };
+  try {
+    const res = await fetch(`/api/speaker-status?pin=${encodeURIComponent(pinParam)}&token=${encodeURIComponent(speakerToken || pinParam)}`, { cache: "no-store" });
+    if (res.ok) {
+      status = await res.json();
+    }
+  } catch (e) {
+    console.warn("fetchSpeakerStatus failed:", e);
+  }
+
+  // 배포 환경(Vercel, Render, Railway, 클라우드 등) 및 서버리스 또는 Gemini 키가 설정된 경우:
+  // Node WebSocket 프록시 지연/타임아웃 없이 브라우저에서 Google 공식 Gemini Live WS로 직접 연결합니다.
+  if (isRemote || status.serverless || status.geminiConfigured) {
     if (!_cachedApiKey) {
-      if (status.geminiConfigured) {
-        const res = await fetch(`/api/key?token=${encodeURIComponent(speakerToken)}`, { cache: "no-store" });
-        const data = await res.json();
-        if (!res.ok || !data.key) {
-          if (res.status === 401) clearSpeakerToken();
-          throw new Error(data.error || "API 키 발급 실패");
-        }
-        _cachedApiKey = data.key;
-      } else {
-        let savedKey = "";
-        try {
-          savedKey = localStorage.getItem("kv_gemini_api_key") || "";
-        } catch (_) {}
-        if (!savedKey) {
-          savedKey = (
-            prompt(
-              "환경변수에 GEMINI_API_KEY가 아직 설정되지 않았습니다.\nGemini API 키를 입력하시면 바로 사용 가능합니다:"
-            ) || ""
-          ).trim();
-          if (!savedKey) {
-            throw new Error("GEMINI_API_KEY를 설정하거나 API 키를 입력해주세요.");
+      // 1. 서버 /api/key 엔드포인트에서 키 조회 (인증 PIN 2026 전달)
+      try {
+        const res = await fetch(`/api/key?pin=${encodeURIComponent(pinParam)}&token=${encodeURIComponent(speakerToken || pinParam)}`, { cache: "no-store" });
+        if (res.ok) {
+          const data = await res.json();
+          if (data.key) {
+            _cachedApiKey = data.key;
           }
-          try {
-            localStorage.setItem("kv_gemini_api_key", savedKey);
-          } catch (_) {}
         }
-        _cachedApiKey = savedKey;
+      } catch (err) {
+        console.warn("서버 API 키 조회 실패:", err);
+      }
+
+      // 2. 서버에 환경변수가 없으면 로컬 스토리지 확인
+      if (!_cachedApiKey) {
+        try {
+          _cachedApiKey = localStorage.getItem("kv_gemini_api_key") || "";
+        } catch (_) {}
+      }
+
+      // 3. 없으면 사용자에게 API 키 입력 요청
+      if (!_cachedApiKey) {
+        const inputKey = (
+          prompt(
+            "실시간 번역을 위해 Gemini API Key가 필요합니다.\nGoogle AI Studio에서 발급받은 Gemini API 키를 입력해주세요:"
+          ) || ""
+        ).trim();
+        if (!inputKey) {
+          throw new Error("Gemini API 키가 필요합니다. 환경변수 GEMINI_API_KEY 또는 API 키를 입력하세요.");
+        }
+        _cachedApiKey = inputKey;
+        try {
+          localStorage.setItem("kv_gemini_api_key", inputKey);
+        } catch (_) {}
       }
     }
+
     return `${WS_ENDPOINT_BASE}?key=${encodeURIComponent(_cachedApiKey)}`;
   }
-  return `${WS_PROTO}//${location.host}/ws/gemini?token=${encodeURIComponent(speakerToken)}`;
+
+  return `${WS_PROTO}//${location.host}/ws/gemini?token=${encodeURIComponent(speakerToken || pinParam)}&pin=${encodeURIComponent(pinParam)}`;
 }
 
 /* ─── Per-Sentence Manual Trigger + Automatic Turn Cut + TTS Integration ─── */
@@ -1783,9 +1880,33 @@ function stopMicrophone() {
 }
 
 /* ─── WebSocket Connection Setup ─── */
-function createTranslationWebSockets(wsUrl, config, onBothReady) {
+function createTranslationWebSockets(wsUrl, config, onBothReady, onError) {
   isReady1 = false;
   isReady2 = false;
+
+  let hasEnded = false;
+  let setupTimer = null;
+
+  const notifyError = (err) => {
+    if (hasEnded) return;
+    hasEnded = true;
+    if (setupTimer) clearTimeout(setupTimer);
+    if (onError) onError(err);
+  };
+
+  const checkBothReady = () => {
+    if (hasEnded) return;
+    if (isReady1 && isReady2) {
+      if (setupTimer) clearTimeout(setupTimer);
+      if (onBothReady) onBothReady();
+    }
+  };
+
+  setupTimer = setTimeout(() => {
+    if (!isReady1 || !isReady2) {
+      notifyError(new Error("Gemini 실시간 번역 서버 연결 시간 초과 (12초). API 키 또는 네트워크 상태를 확인하세요."));
+    }
+  }, 12000);
 
   if (ws1) {
     try {
@@ -1798,7 +1919,46 @@ function createTranslationWebSockets(wsUrl, config, onBothReady) {
     } catch (_) {}
   }
 
-  ws1 = new WebSocket(wsUrl);
+  try {
+    ws1 = new WebSocket(wsUrl);
+  } catch (err) {
+    notifyError(new Error(`1차 번역 연결 생성 실패: ${err.message}`));
+    return;
+  }
+
+  try {
+    ws2 = new WebSocket(wsUrl);
+  } catch (err) {
+    notifyError(new Error(`2차 번역 연결 생성 실패: ${err.message}`));
+    return;
+  }
+
+  ws1.onerror = (e) => {
+    console.error("ws1 error:", e);
+    if (!isReady1) {
+      notifyError(new Error("1차 번역(베트남어) 서버 연결 실패. API 키나 인터넷 연결을 확인해주세요."));
+    }
+  };
+
+  ws2.onerror = (e) => {
+    console.error("ws2 error:", e);
+    if (!isReady2) {
+      notifyError(new Error("2차 번역(영어) 서버 연결 실패. API 키나 인터넷 연결을 확인해주세요."));
+    }
+  };
+
+  ws1.onclose = (e) => {
+    if (!isReady1 && e.code !== 1000) {
+      notifyError(new Error(`1차 번역 연결 종료 (코드: ${e.code})`));
+    }
+  };
+
+  ws2.onclose = (e) => {
+    if (!isReady2 && e.code !== 1000) {
+      notifyError(new Error(`2차 번역 연결 종료 (코드: ${e.code})`));
+    }
+  };
+
   ws1.onopen = () => {
     const setupMsg = {
       setup: {
@@ -1814,7 +1974,11 @@ function createTranslationWebSockets(wsUrl, config, onBothReady) {
         outputAudioTranscription: {},
       },
     };
-    ws1.send(JSON.stringify(setupMsg));
+    try {
+      ws1.send(JSON.stringify(setupMsg));
+    } catch (err) {
+      notifyError(err);
+    }
   };
 
   ws1.onmessage = async (event) => {
@@ -1829,7 +1993,7 @@ function createTranslationWebSockets(wsUrl, config, onBothReady) {
 
     if (msg.setupComplete) {
       isReady1 = true;
-      if (isReady1 && isReady2 && onBothReady) onBothReady();
+      checkBothReady();
       return;
     }
 
@@ -1868,7 +2032,6 @@ function createTranslationWebSockets(wsUrl, config, onBothReady) {
     }
   };
 
-  ws2 = new WebSocket(wsUrl);
   ws2.onopen = () => {
     const setupMsg = {
       setup: {
@@ -1883,7 +2046,11 @@ function createTranslationWebSockets(wsUrl, config, onBothReady) {
         outputAudioTranscription: {},
       },
     };
-    ws2.send(JSON.stringify(setupMsg));
+    try {
+      ws2.send(JSON.stringify(setupMsg));
+    } catch (err) {
+      notifyError(err);
+    }
   };
 
   ws2.onmessage = async (event) => {
@@ -1898,7 +2065,7 @@ function createTranslationWebSockets(wsUrl, config, onBothReady) {
 
     if (msg.setupComplete) {
       isReady2 = true;
-      if (isReady1 && isReady2 && onBothReady) onBothReady();
+      checkBothReady();
       return;
     }
 
@@ -1942,7 +2109,7 @@ function createTranslationWebSockets(wsUrl, config, onBothReady) {
       if (msg.setupComplete) {
         if (idx === 1) isReady1 = true;
         if (idx === 2) isReady2 = true;
-        if (isReady1 && isReady2 && onBothReady) onBothReady();
+        checkBothReady();
         return;
       }
       if (origHandler) origHandler(event);
@@ -1957,14 +2124,19 @@ async function reconnectWebSocketsIfNeeded() {
   const wsUrl = await getGeminiProxyUrl();
   const config = LANG_CONFIGS[selectedLang];
   await new Promise((resolve) => {
-    createTranslationWebSockets(wsUrl, config, resolve);
-    setTimeout(resolve, 2500);
+    createTranslationWebSockets(wsUrl, config, resolve, () => resolve());
+    setTimeout(resolve, 3000);
   });
 }
 
 /* ─── [1. 번역 시작] Button Handler ─── */
 async function start() {
   if (sessionRunning) return;
+
+  if (!isUserAuthenticated()) {
+    showAuthOverlay();
+    return;
+  }
 
   try {
     unlockAudio();
@@ -1981,39 +2153,53 @@ async function start() {
     await startMicrophone();
     setMicHardwareEnabled(false);
 
-    createTranslationWebSockets(wsUrl, config, () => {
-      if (!sessionRunning) return;
-      turnState = "standby";
-      setMicHardwareEnabled(false);
-      updateTranslationButtonsUI();
-      refreshAllPanels();
+    await new Promise((resolve, reject) => {
+      createTranslationWebSockets(
+        wsUrl,
+        config,
+        () => {
+          if (!sessionRunning) return;
+          turnState = "standby";
+          setMicHardwareEnabled(false);
+          updateTranslationButtonsUI();
+          refreshAllPanels();
 
-      if (!timerHandle) {
-        startedAt = Date.now();
-        timerHandle = setInterval(updateTimer, 1000);
-      }
+          if (!timerHandle) {
+            startedAt = Date.now();
+            timerHandle = setInterval(updateTimer, 1000);
+          }
 
-      setStatus(
-        "✅ 번역 준비 완료 — [2. 문장 번역] 버튼을 누르고 한 문장씩 말씀하세요",
-        "standby"
+          setStatus(
+            "✅ 번역 준비 완료 — [2. 문장 번역] 버튼을 누르고 한 문장씩 말씀하세요",
+            "standby"
+          );
+
+          emitListenerEvent({
+            type: "session_status",
+            status: "live",
+            sourceLang: selectedLang,
+            sourceName: config.name,
+            target1Lang: config.target1.code,
+            target2Lang: config.target2.code,
+          });
+          resolve();
+        },
+        (err) => {
+          reject(err);
+        }
       );
-
-      emitListenerEvent({
-        type: "session_status",
-        status: "live",
-        sourceLang: selectedLang,
-        sourceName: config.name,
-        target1Lang: config.target1.code,
-        target2Lang: config.target2.code,
-      });
     });
   } catch (error) {
     console.error("세션 시작 실패:", error);
     setStatus(`오류: ${error.message}`, "error");
     sessionRunning = false;
     turnState = "idle";
+    startBtn.disabled = false;
+    startBtn.textContent = "🚀 1. 번역 시작";
+    startBtn.classList.remove("is-connected");
     updateTranslationButtonsUI();
     stop();
+    alert(`번역 시작 실패:\n${error.message}`);
   }
 }
 
@@ -2153,3 +2339,10 @@ setLanguage(selectedLang);
 applyScreenOptimization();
 updatePanelVisibility();
 updateTranslationButtonsUI();
+
+// 🔒 Security PIN 2026 Enforcement on Screen Access
+if (!isUserAuthenticated()) {
+  showAuthOverlay();
+} else {
+  hideAuthOverlay();
+}

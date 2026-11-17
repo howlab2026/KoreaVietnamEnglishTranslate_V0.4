@@ -5,6 +5,88 @@
 
 const $ = (id) => document.getElementById(id);
 
+/* ─── Security PIN 2026 Authentication ─── */
+const AUTH_PIN_REQUIRED = "2026";
+let authPin = "";
+try {
+  authPin = sessionStorage.getItem("kv_auth_pin") || localStorage.getItem("kv_auth_pin") || "";
+} catch (_) {}
+
+const authOverlay = $("authOverlay");
+const authForm = $("authForm");
+const authPinInput = $("authPinInput");
+const authErrorMsg = $("authErrorMsg");
+const authSubmitBtn = $("authSubmitBtn");
+
+function isUserAuthenticated() {
+  return authPin === AUTH_PIN_REQUIRED;
+}
+
+function showAuthOverlay() {
+  if (authOverlay) {
+    authOverlay.classList.remove("hidden");
+    authOverlay.style.display = "flex";
+  }
+  if (authPinInput) {
+    authPinInput.value = "";
+    setTimeout(() => authPinInput.focus(), 100);
+  }
+}
+
+function hideAuthOverlay() {
+  if (authOverlay) {
+    authOverlay.classList.add("hidden");
+    authOverlay.style.display = "none";
+  }
+}
+
+async function handleAuthSubmit(e) {
+  if (e) e.preventDefault();
+  const inputPin = (authPinInput?.value || "").trim();
+  if (inputPin === AUTH_PIN_REQUIRED) {
+    authPin = AUTH_PIN_REQUIRED;
+    try {
+      sessionStorage.setItem("kv_auth_pin", authPin);
+      localStorage.setItem("kv_auth_pin", authPin);
+    } catch (_) {}
+    if (authErrorMsg) authErrorMsg.classList.add("hidden");
+    hideAuthOverlay();
+  } else {
+    try {
+      const res = await fetch("/api/auth", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ pin: inputPin }),
+      });
+      const data = await res.json();
+      if (res.ok && data.ok) {
+        authPin = data.pin || AUTH_PIN_REQUIRED;
+        try {
+          sessionStorage.setItem("kv_auth_pin", authPin);
+          localStorage.setItem("kv_auth_pin", authPin);
+        } catch (_) {}
+        if (authErrorMsg) authErrorMsg.classList.add("hidden");
+        hideAuthOverlay();
+        return;
+      }
+    } catch (_) {}
+
+    if (authErrorMsg) {
+      authErrorMsg.classList.remove("hidden");
+      authErrorMsg.textContent = "⚠️ 인증번호(2026)가 올바르지 않습니다. 다시 입력해주세요.";
+    }
+    if (authPinInput) {
+      authPinInput.classList.add("shake");
+      setTimeout(() => authPinInput.classList.remove("shake"), 500);
+      authPinInput.value = "";
+      authPinInput.focus();
+    }
+  }
+}
+
+authForm?.addEventListener("submit", handleAuthSubmit);
+authSubmitBtn?.addEventListener("click", handleAuthSubmit);
+
 // UI Elements
 const audioUnlockBanner = $("audioUnlockBanner");
 const unlockAudioBtn = $("unlockAudioBtn");
@@ -761,7 +843,8 @@ async function startServerlessBroadcastPolling() {
   updateConnectionState("waiting", "원어민 발화 대기 중");
   const poll = async () => {
     try {
-      const res = await fetch(`/api/broadcast?since=${lastBroadcastSeq}`, { cache: "no-store" });
+      const pinParam = authPin || "2026";
+      const res = await fetch(`/api/broadcast?since=${lastBroadcastSeq}&pin=${encodeURIComponent(pinParam)}`, { cache: "no-store" });
       if (res.ok) {
         const data = await res.json();
         if (lastBroadcastSeq === 0) {
@@ -784,8 +867,9 @@ async function startServerlessBroadcastPolling() {
 }
 
 async function connectListenerWs() {
+  const pinParam = authPin || "2026";
   try {
-    const statusRes = await fetch("/api/speaker-status", { cache: "no-store" });
+    const statusRes = await fetch(`/api/speaker-status?pin=${encodeURIComponent(pinParam)}`, { cache: "no-store" });
     if (statusRes.ok) {
       const statusData = await statusRes.json();
       if (statusData.serverless) {
@@ -796,7 +880,7 @@ async function connectListenerWs() {
   } catch (_) {}
 
   const protocol = location.protocol === "https:" ? "wss:" : "ws:";
-  const wsUrl = `${protocol}//${location.host}/ws/broadcast`;
+  const wsUrl = `${protocol}//${location.host}/ws/broadcast?pin=${encodeURIComponent(pinParam)}`;
   let ws;
 
   try {
@@ -884,3 +968,10 @@ function initHorizontalResizer() {
 
 // Initialize Resizer
 initHorizontalResizer();
+
+// 🔒 Security PIN 2026 Enforcement on Screen Access
+if (!isUserAuthenticated()) {
+  showAuthOverlay();
+} else {
+  hideAuthOverlay();
+}
