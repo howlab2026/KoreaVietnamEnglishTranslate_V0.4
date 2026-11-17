@@ -83,16 +83,48 @@ setInterval(() => {
   }
 }, 5 * 60_000).unref();
 
+const ttsClients = new Map();
+
+function escapeXmlForSsml(str) {
+  return String(str || "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&apos;");
+}
+
+async function getWarmTtsClient(voice) {
+  let client = ttsClients.get(voice);
+  if (!client) {
+    client = new MsEdgeTTS({ connectionTimeoutMs: 6000, synthesisTimeoutMs: 12000 });
+    await client.setMetadata(voice, OUTPUT_FORMAT.AUDIO_24KHZ_48KBITRATE_MONO_MP3);
+    ttsClients.set(voice, client);
+  }
+  return client;
+}
+
+function resetTtsClient(voice) {
+  const client = ttsClients.get(voice);
+  if (client) {
+    ttsClients.delete(voice);
+    try {
+      client.close();
+    } catch (_) {}
+  }
+}
+
 async function synthesizeOnce(text, voice, rate, pitch) {
-  const tts = new MsEdgeTTS();
-  await tts.setMetadata(voice, OUTPUT_FORMAT.AUDIO_24KHZ_48KBITRATE_MONO_MP3);
-  const { audioStream } = await tts.toStream(text, { rate, pitch });
+  const safeText = escapeXmlForSsml(text);
+  const tts = await getWarmTtsClient(voice);
+  const { audioStream } = await tts.toStream(safeText, { rate, pitch });
   const chunks = [];
   return new Promise((resolve, reject) => {
     let finished = false;
     const timeout = setTimeout(() => {
       if (!finished) {
         finished = true;
+        resetTtsClient(voice);
         reject(new Error("TTS synthesis timeout"));
       }
     }, 8000);
@@ -104,17 +136,37 @@ async function synthesizeOnce(text, voice, rate, pitch) {
         clearTimeout(timeout);
         const buf = Buffer.concat(chunks);
         if (buf.length > 0) resolve(buf);
-        else reject(new Error("Empty audio stream buffer"));
+        else {
+          resetTtsClient(voice);
+          reject(new Error("Empty audio stream buffer"));
+        }
       }
     });
     audioStream.on("error", (err) => {
       if (!finished) {
         finished = true;
         clearTimeout(timeout);
+        resetTtsClient(voice);
         reject(err);
       }
     });
   });
+}
+
+async function fetchGoogleTtsFallback(text, voice) {
+  const tl = voice.startsWith("vi") ? "vi" : voice.startsWith("en") ? "en" : "ko";
+  const q = String(text || "").slice(0, 200);
+  const url = `https://translate.google.com/translate_tts?ie=UTF-8&tl=${tl}&client=tw-ob&q=${encodeURIComponent(q)}`;
+  const res = await fetch(url, {
+    headers: {
+      "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+    },
+  });
+  if (!res.ok) throw new Error(`Fallback TTS HTTP ${res.status}`);
+  const arr = await res.arrayBuffer();
+  const buf = Buffer.from(arr);
+  if (!buf.length) throw new Error("Fallback TTS empty audio");
+  return buf;
 }
 
 async function synthesizeWithRetry(text, voice, rate, pitch) {
@@ -124,8 +176,15 @@ async function synthesizeWithRetry(text, voice, rate, pitch) {
       return await synthesizeOnce(text, voice, rate, pitch);
     } catch (err) {
       lastErr = err;
-      await new Promise((r) => setTimeout(r, 200 * (attempt + 1)));
+      resetTtsClient(voice);
+      await new Promise((r) => setTimeout(r, 150 * (attempt + 1)));
     }
+  }
+  // Edge TTS WebSocket이 차단되거나 실패한 경우(클라우드/서버리스 등) Google TTS MP3로 폴백
+  try {
+    return await fetchGoogleTtsFallback(text, voice);
+  } catch (fallbackErr) {
+    console.warn("Google TTS fallback failed:", fallbackErr?.message || fallbackErr);
   }
   throw lastErr;
 }

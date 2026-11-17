@@ -405,7 +405,7 @@ body.dark-theme .status.tts {
 /* ─── Unified Top Configuration Grid (발화 언어 + 통합 TTS 컨트롤) ─── */
 .top-config-grid {
   display: grid;
-  grid-template-columns: 1fr 1.25fr;
+  grid-template-columns: 0.95fr 1.35fr;
   gap: 10px;
   margin: 8px 0 6px;
   flex-shrink: 0;
@@ -592,43 +592,46 @@ body.dark-theme .lang-btn[data-lang="vi"].active .btn-text small {
   padding-bottom: 6px;
   border-bottom: 1px dashed var(--border-card);
   margin-bottom: 6px;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
 }
 
 .tts-title-group {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 6px;
+  flex-shrink: 0;
 }
 
 .tts-badge-icon {
-  font-size: 15px;
+  font-size: 14px;
 }
 
 .tts-bar-title {
-  font-size: 12.5px;
+  font-size: 12px;
   font-weight: 800;
   color: var(--text-primary);
+  white-space: nowrap;
 }
 
 .tts-auto-switch {
   display: inline-flex;
   align-items: center;
-  gap: 5px;
+  gap: 4px;
   cursor: pointer;
   background: var(--bg-card-sub);
-  padding: 3px 8px;
+  padding: 2px 7px;
   border-radius: 9999px;
   border: 1px solid var(--border-card);
-  font-size: 11.5px;
+  font-size: 11px;
   font-weight: 700;
   user-select: none;
+  white-space: nowrap;
 }
 
 .tts-auto-switch input {
   accent-color: #6366f1;
-  width: 14px;
-  height: 14px;
+  width: 13px;
+  height: 13px;
   margin: 0;
   cursor: pointer;
 }
@@ -636,20 +639,22 @@ body.dark-theme .lang-btn[data-lang="vi"].active .btn-text small {
 .tts-target-group {
   display: flex;
   align-items: center;
-  gap: 5px;
-  flex-wrap: wrap;
+  gap: 4px;
+  flex-wrap: nowrap;
+  min-width: 0;
 }
 
 .tts-sub-label {
-  font-size: 11.5px;
+  font-size: 11px;
   font-weight: 700;
   color: var(--text-muted);
   white-space: nowrap;
+  flex-shrink: 0;
 }
 
 .tts-lang-pill {
-  padding: 4px 10px;
-  font-size: 11.5px;
+  padding: 3px 9px;
+  font-size: 11px;
   font-weight: 700;
   border-radius: 9999px;
   background: var(--bg-card-sub);
@@ -657,6 +662,7 @@ body.dark-theme .lang-btn[data-lang="vi"].active .btn-text small {
   border: 1px solid var(--border-card);
   cursor: pointer;
   transition: all 0.18s ease;
+  white-space: nowrap;
 }
 
 .tts-lang-pill:hover {
@@ -750,34 +756,44 @@ body.dark-theme .speaking-text {
   color: var(--text-muted);
 }
 
-.tts-bar-bottom {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 10px;
-  flex-wrap: wrap;
+.tts-bar-voices {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+  padding-bottom: 6px;
+  margin-bottom: 6px;
+  border-bottom: 1px dashed var(--border-card);
 }
 
 .tts-voice-wrap {
   display: flex;
   align-items: center;
   gap: 6px;
-  flex: 1;
-  min-width: 190px;
+  min-width: 0;
 }
 
 .voice-select {
   flex: 1;
+  min-width: 0;
+  width: 100%;
   background: var(--ctrl-input-bg);
   color: var(--ctrl-input-text);
   border: 1px solid var(--ctrl-input-border);
   border-radius: 8px;
   padding: 4px 8px;
-  font-size: 12px;
+  font-size: 11.5px;
   font-weight: 600;
   cursor: pointer;
   outline: none;
-  max-width: 280px;
+  text-overflow: ellipsis;
+}
+
+.tts-bar-bottom {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  flex-wrap: nowrap;
 }
 
 .tts-sliders-wrap {
@@ -2093,6 +2109,17 @@ body.dark-theme .prev-sentence-item {
 /* ─── Responsive Queries ─── */
 @media (max-width: 1180px) {
   .top-config-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 720px) {
+  .tts-bar-top,
+  .tts-bar-bottom {
+    flex-wrap: wrap;
+  }
+
+  .tts-bar-voices {
     grid-template-columns: 1fr;
   }
 }

@@ -713,46 +713,51 @@ async function fetchVoicesForLang(langCode) {
   return voicesByLang[langCode] || DEFAULT_NEURAL_VOICES[langCode] || [];
 }
 
+function renderVoiceOptions(selectEl, langCode, voices) {
+  if (!selectEl) return;
+  const savedVoiceId = localStorage.getItem(`unified_voice_${langCode}`);
+  selectEl.innerHTML = "";
+  let matched = false;
+  voices.forEach((v, idx) => {
+    const opt = document.createElement("option");
+    opt.value = v.id;
+    const genderIcon = v.gender === "Female" ? "👩" : "👨";
+    opt.textContent = `${genderIcon} ${v.name}`;
+    if (savedVoiceId && v.id === savedVoiceId) {
+      opt.selected = true;
+      matched = true;
+    } else if (!savedVoiceId && idx === 0) {
+      opt.selected = true;
+      matched = true;
+    }
+    selectEl.appendChild(opt);
+  });
+  if (!matched && voices.length > 0) {
+    selectEl.selectedIndex = 0;
+  }
+}
+
 async function populateVoiceSelectForCurrentMode() {
   const config = LANG_CONFIGS[selectedLang];
 
   if (voiceLabel1) {
-    voiceLabel1.textContent = `🎤 ${config.target1.flag} 번역1(${config.target1.name}) 목소리:`;
+    voiceLabel1.textContent = `${config.target1.flag} 번역1:`;
   }
   if (voiceLabel2) {
-    voiceLabel2.textContent = `🎤 ${config.target2.flag} 번역2(${config.target2.name}) 목소리:`;
+    voiceLabel2.textContent = `${config.target2.flag} 번역2:`;
   }
 
-  const populateSelect = async (selectEl, langCode) => {
-    if (!selectEl) return;
-    const voices = await fetchVoicesForLang(langCode);
-    const savedVoiceId = localStorage.getItem(`unified_voice_${langCode}`);
+  // 즉시 기본 목록으로 채워 초기 로딩 중에도 목소리 ID가 비지 않도록 보장
+  renderVoiceOptions(voiceSelect1, config.target1.code, voicesByLang[config.target1.code] || DEFAULT_NEURAL_VOICES[config.target1.code] || []);
+  renderVoiceOptions(voiceSelect2, config.target2.code, voicesByLang[config.target2.code] || DEFAULT_NEURAL_VOICES[config.target2.code] || []);
 
-    selectEl.innerHTML = "";
-    let matched = false;
-    voices.forEach((v, idx) => {
-      const opt = document.createElement("option");
-      opt.value = v.id;
-      const genderIcon = v.gender === "Female" ? "👩" : "👨";
-      opt.textContent = `${genderIcon} ${v.name}`;
-      if (savedVoiceId && v.id === savedVoiceId) {
-        opt.selected = true;
-        matched = true;
-      } else if (!savedVoiceId && idx === 0) {
-        opt.selected = true;
-        matched = true;
-      }
-      selectEl.appendChild(opt);
-    });
-    if (!matched && voices.length > 0) {
-      selectEl.selectedIndex = 0;
-    }
-  };
-
-  await Promise.all([
-    populateSelect(voiceSelect1, config.target1.code),
-    populateSelect(voiceSelect2, config.target2.code),
+  // 서버 최신 목록으로 갱신
+  const [v1, v2] = await Promise.all([
+    fetchVoicesForLang(config.target1.code),
+    fetchVoicesForLang(config.target2.code),
   ]);
+  renderVoiceOptions(voiceSelect1, config.target1.code, v1);
+  renderVoiceOptions(voiceSelect2, config.target2.code, v2);
 }
 
 function getVoiceIdForLang(langCode) {
@@ -800,7 +805,7 @@ function updateTtsModeUI() {
     ttsModeT2Btn.classList.toggle("active", ttsMode === "target2");
   }
   if (ttsModeBothBtn) {
-    ttsModeBothBtn.textContent = `🔊 ${config.target1.flag}+${config.target2.flag} 연속`;
+    ttsModeBothBtn.textContent = `🔊 ${config.target1.flag}+${config.target2.flag}`;
     ttsModeBothBtn.classList.toggle("active", ttsMode === "both");
   }
 
