@@ -88,15 +88,33 @@ async function synthesizeOnce(text, voice, rate, pitch) {
   await tts.setMetadata(voice, OUTPUT_FORMAT.AUDIO_24KHZ_48KBITRATE_MONO_MP3);
   const { audioStream } = await tts.toStream(text, { rate, pitch });
   const chunks = [];
-  await new Promise((resolve, reject) => {
+  return new Promise((resolve, reject) => {
+    let finished = false;
+    const timeout = setTimeout(() => {
+      if (!finished) {
+        finished = true;
+        reject(new Error("TTS synthesis timeout"));
+      }
+    }, 8000);
+
     audioStream.on("data", (c) => chunks.push(c));
-    audioStream.on("end", resolve);
-    audioStream.on("close", resolve);
-    audioStream.on("error", reject);
+    audioStream.on("end", () => {
+      if (!finished) {
+        finished = true;
+        clearTimeout(timeout);
+        const buf = Buffer.concat(chunks);
+        if (buf.length > 0) resolve(buf);
+        else reject(new Error("Empty audio stream buffer"));
+      }
+    });
+    audioStream.on("error", (err) => {
+      if (!finished) {
+        finished = true;
+        clearTimeout(timeout);
+        reject(err);
+      }
+    });
   });
-  const buf = Buffer.concat(chunks);
-  if (!buf.length) throw new Error("Empty audio");
-  return buf;
 }
 
 async function synthesizeWithRetry(text, voice, rate, pitch) {
@@ -106,7 +124,7 @@ async function synthesizeWithRetry(text, voice, rate, pitch) {
       return await synthesizeOnce(text, voice, rate, pitch);
     } catch (err) {
       lastErr = err;
-      await new Promise((r) => setTimeout(r, 400 * (attempt + 1)));
+      await new Promise((r) => setTimeout(r, 200 * (attempt + 1)));
     }
   }
   throw lastErr;
@@ -118,19 +136,46 @@ async function synthesizeWithRetry(text, voice, rate, pitch) {
  */
 app.get("/api/tts", async (req, res) => {
   const text = String(req.query.text || "").trim();
-  const voice = String(req.query.voice || "ko-KR-SunHiNeural");
-  const rate = String(req.query.rate || "+0%");
-  const pitch = String(req.query.pitch || "+0Hz");
+  let voice = String(req.query.voice || "").trim();
+  let rate = String(req.query.rate || "+0%").trim();
+  let pitch = String(req.query.pitch || "+0Hz").trim();
 
   if (!text) return res.status(400).json({ error: "Text is required" });
   if (text.length > TTS_MAX_TEXT_LENGTH) {
     return res.status(413).json({ error: `Text too long (max ${TTS_MAX_TEXT_LENGTH})` });
   }
+
+  // 1. Voice ID 보정 및 안전 매핑 (잘못된 음성 ID로 인한 400 차단)
   if (!ALLOWED_VOICE_IDS.has(voice)) {
-    return res.status(400).json({ error: "Unsupported voice" });
+    if (voice.startsWith("vi") || voice.includes("VN")) {
+      voice = "vi-VN-HoaiMyNeural";
+    } else if (voice.startsWith("en") || voice.includes("US")) {
+      voice = "en-US-JennyNeural";
+    } else {
+      voice = "ko-KR-SunHiNeural";
+    }
   }
-  if (!/^[+-]\d{1,3}%$/.test(rate) || !/^[+-]\d{1,3}Hz$/.test(pitch)) {
-    return res.status(400).json({ error: "Invalid rate or pitch" });
+
+  // 2. 속도(rate) 포맷 정규화 (+가 공백으로 디코딩된 경우 자동 복원)
+  if (!rate.startsWith("+") && !rate.startsWith("-")) {
+    rate = "+" + rate;
+  }
+  if (!rate.endsWith("%")) {
+    rate = rate + "%";
+  }
+  if (!/^[+-]\d{1,3}%$/.test(rate)) {
+    rate = "+0%";
+  }
+
+  // 3. 음높이(pitch) 포맷 정규화 (+가 공백으로 디코딩된 경우 자동 복원)
+  if (!pitch.startsWith("+") && !pitch.startsWith("-")) {
+    pitch = "+" + pitch;
+  }
+  if (!pitch.endsWith("Hz")) {
+    pitch = pitch + "Hz";
+  }
+  if (!/^[+-]\d{1,3}Hz$/.test(pitch)) {
+    pitch = "+0Hz";
   }
 
   const key = `${voice}|${rate}|${pitch}|${text}`;

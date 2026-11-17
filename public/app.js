@@ -270,7 +270,11 @@ const ttsModeT2Btn = $("ttsModeT2Btn");
 const ttsModeBothBtn = $("ttsModeBothBtn");
 const ttsSpeakingIndicator = $("ttsSpeakingIndicator");
 const ttsStatusLabel = $("ttsStatusLabel");
-const voiceSelect = $("voiceSelect");
+const voiceSelect1 = $("voiceSelect1");
+const voiceSelect2 = $("voiceSelect2");
+const voiceLabel1 = $("voiceLabel1");
+const voiceLabel2 = $("voiceLabel2");
+const voiceSelect = $("voiceSelect") || voiceSelect1;
 const ttsRate = $("ttsRate");
 const ttsPitch = $("ttsPitch");
 const ttsVolume = $("ttsVolume");
@@ -710,48 +714,77 @@ async function fetchVoicesForLang(langCode) {
 }
 
 async function populateVoiceSelectForCurrentMode() {
-  if (!voiceSelect) return;
-  const langCode = getActiveTtsVoiceLangCode();
-  const voices = await fetchVoicesForLang(langCode);
-  const savedVoiceId = localStorage.getItem(`unified_voice_${langCode}`);
+  const config = LANG_CONFIGS[selectedLang];
 
-  voiceSelect.innerHTML = "";
-  let matched = false;
-  voices.forEach((v, idx) => {
-    const opt = document.createElement("option");
-    opt.value = v.id;
-    const genderIcon = v.gender === "Female" ? "👩" : "👨";
-    opt.textContent = `${genderIcon} ${v.name}`;
-    if (savedVoiceId && v.id === savedVoiceId) {
-      opt.selected = true;
-      matched = true;
-    } else if (!savedVoiceId && idx === 0) {
-      opt.selected = true;
-      matched = true;
-    }
-    voiceSelect.appendChild(opt);
-  });
-  if (!matched && voices.length > 0) {
-    voiceSelect.selectedIndex = 0;
+  if (voiceLabel1) {
+    voiceLabel1.textContent = `🎤 ${config.target1.flag} 번역1(${config.target1.name}) 목소리:`;
   }
+  if (voiceLabel2) {
+    voiceLabel2.textContent = `🎤 ${config.target2.flag} 번역2(${config.target2.name}) 목소리:`;
+  }
+
+  const populateSelect = async (selectEl, langCode) => {
+    if (!selectEl) return;
+    const voices = await fetchVoicesForLang(langCode);
+    const savedVoiceId = localStorage.getItem(`unified_voice_${langCode}`);
+
+    selectEl.innerHTML = "";
+    let matched = false;
+    voices.forEach((v, idx) => {
+      const opt = document.createElement("option");
+      opt.value = v.id;
+      const genderIcon = v.gender === "Female" ? "👩" : "👨";
+      opt.textContent = `${genderIcon} ${v.name}`;
+      if (savedVoiceId && v.id === savedVoiceId) {
+        opt.selected = true;
+        matched = true;
+      } else if (!savedVoiceId && idx === 0) {
+        opt.selected = true;
+        matched = true;
+      }
+      selectEl.appendChild(opt);
+    });
+    if (!matched && voices.length > 0) {
+      selectEl.selectedIndex = 0;
+    }
+  };
+
+  await Promise.all([
+    populateSelect(voiceSelect1, config.target1.code),
+    populateSelect(voiceSelect2, config.target2.code),
+  ]);
 }
 
 function getVoiceIdForLang(langCode) {
-  const activeLang = getActiveTtsVoiceLangCode();
-  if (langCode === activeLang && voiceSelect?.value) {
-    return voiceSelect.value;
+  const config = LANG_CONFIGS[selectedLang];
+  let voiceId = "";
+  if (config.target1.code === langCode && voiceSelect1?.value) {
+    voiceId = voiceSelect1.value;
+  } else if (config.target2.code === langCode && voiceSelect2?.value) {
+    voiceId = voiceSelect2.value;
+  } else {
+    voiceId = localStorage.getItem(`unified_voice_${langCode}`);
   }
-  const saved = localStorage.getItem(`unified_voice_${langCode}`);
+
   const list = voicesByLang[langCode] || DEFAULT_NEURAL_VOICES[langCode] || [];
-  if (saved && list.some((v) => v.id === saved)) return saved;
-  return list[0]?.id || "ko-KR-SunHiNeural";
+  if (voiceId && list.some((v) => v.id === voiceId)) return voiceId;
+  return list[0]?.id || (langCode === "vi" ? "vi-VN-HoaiMyNeural" : langCode === "en" ? "en-US-JennyNeural" : "ko-KR-SunHiNeural");
 }
 
-voiceSelect?.addEventListener("change", () => {
-  const langCode = getActiveTtsVoiceLangCode();
-  if (voiceSelect.value) {
+voiceSelect1?.addEventListener("change", () => {
+  const config = LANG_CONFIGS[selectedLang];
+  if (voiceSelect1.value) {
     try {
-      localStorage.setItem(`unified_voice_${langCode}`, voiceSelect.value);
+      localStorage.setItem(`unified_voice_${config.target1.code}`, voiceSelect1.value);
+    } catch (_) {}
+  }
+});
+
+voiceSelect2?.addEventListener("change", () => {
+  const config = LANG_CONFIGS[selectedLang];
+  if (voiceSelect2.value) {
+    try {
+      localStorage.setItem(`unified_voice_${config.target2.code}`, voiceSelect2.value);
     } catch (_) {}
   }
 });
@@ -883,7 +916,7 @@ function stopTts() {
 }
 
 function playSingleUtterance(text, langCode) {
-  return new Promise((resolve) => {
+  return new Promise(async (resolve) => {
     const clean = (text || "").trim();
     if (!clean || ttsPlaybackAborted) {
       resolve();
@@ -902,10 +935,23 @@ function playSingleUtterance(text, langCode) {
     if (currentTtsText) {
       currentTtsText.textContent = clean;
     }
-    setSpeakingIndicator(true, "TTS 읽는 중...");
+    setSpeakingIndicator(true, `🔊 TTS 읽는 중 (${langCode.toUpperCase()})...`);
 
     const url = `/api/tts?text=${encodeURIComponent(clean)}&voice=${encodeURIComponent(voiceId)}&rate=${encodeURIComponent(rateStr)}&pitch=${encodeURIComponent(pitchStr)}`;
-    const audio = new Audio(url);
+
+    let audioUrl = url;
+    let blobUrlToRevoke = null;
+
+    try {
+      const res = await fetch(url);
+      if (res.ok) {
+        const blob = await res.blob();
+        blobUrlToRevoke = URL.createObjectURL(blob);
+        audioUrl = blobUrlToRevoke;
+      }
+    } catch (_) {}
+
+    const audio = new Audio(audioUrl);
     currentAudio = audio;
     audio.volume = volume;
 
@@ -913,13 +959,15 @@ function playSingleUtterance(text, langCode) {
     const finish = () => {
       if (done) return;
       done = true;
+      if (blobUrlToRevoke) {
+        try { URL.revokeObjectURL(blobUrlToRevoke); } catch (_) {}
+      }
       currentAudio = null;
       resolve();
     };
 
     audio.onended = finish;
     audio.onerror = () => {
-      // Fallback to browser SpeechSynthesis if neural TTS endpoint fails
       if (!window.speechSynthesis || ttsPlaybackAborted) {
         finish();
         return;
@@ -1626,12 +1674,13 @@ function lockMicrophoneForSingleSentence() {
 
   setMicHardwareEnabled(false);
   updateTranslationButtonsUI();
-  setStatus("⏳ 한 문장 번역 확정 중...", "standby");
+  setStatus("⚡ 번역 확정 중...", "standby");
 
-  scheduleSingleSentenceFinalize(850);
+  // 발화 종료 즉시 지연 없이 고속 확정 (기존 850ms -> 200ms)
+  scheduleSingleSentenceFinalize(200);
 }
 
-function scheduleSingleSentenceFinalize(delayMs = 500) {
+function scheduleSingleSentenceFinalize(delayMs = 200) {
   if (turnState !== "finalizing") return;
   if (commitTimeout) clearTimeout(commitTimeout);
   commitTimeout = setTimeout(() => {
@@ -1758,38 +1807,22 @@ async function startMicrophone() {
   sourceNode.connect(analyserNode);
   updateMeter();
 
-  processorNode = audioContext.createScriptProcessor(4096, 1, 1);
+  // 버퍼 크기를 2048로 낮춰 음성 스트리밍 지연시간을 42ms로 대폭 단축
+  processorNode = audioContext.createScriptProcessor(2048, 1, 1);
   processorNode.onaudioprocess = (event) => {
     if (!isReady1 && !isReady2) return;
+
+    // [2. 문장 번역] 버튼을 눌러 "listening" 상태일 때만 실제 마이크 음성을 전송
+    // 듣기 상태가 아닐 때는 불필요한 무음 패킷 전송을 중단하여 대역폭 및 서버 버퍼 지연 제거
+    if (turnState !== "listening") {
+      return;
+    }
 
     const input = event.inputBuffer.getChannelData(0);
     const mono16k =
       audioContext.sampleRate === 16000
         ? input
         : resampleLinear(input, audioContext.sampleRate, 16000);
-
-    // [2. 문장 번역] 버튼을 눌러 "listening" 상태일 때만 실제 마이크 음성을 전송하고,
-    // 그 외 상태("standby", "finalizing", "tts_playing")에서는 무음(0)만 전송하여 번역이 절대 진행되지 않도록 차단
-    if (turnState !== "listening") {
-      const silentPcm = new Int16Array(mono16k.length);
-      const silentData = base64FromBytes(new Uint8Array(silentPcm.buffer));
-      const silentPayload = JSON.stringify({
-        realtimeInput: {
-          audio: { data: silentData, mimeType: "audio/pcm;rate=16000" },
-        },
-      });
-      if (ws1 && ws1.readyState === WebSocket.OPEN && isReady1) {
-        try {
-          ws1.send(silentPayload);
-        } catch (_) {}
-      }
-      if (ws2 && ws2.readyState === WebSocket.OPEN && isReady2) {
-        try {
-          ws2.send(silentPayload);
-        } catch (_) {}
-      }
-      return;
-    }
 
     // "listening" 상태에서 한 문장 발화 시작 및 종료(침묵) 감지
     let sumSq = 0;
@@ -1809,11 +1842,13 @@ async function startMicrophone() {
       const spokenDuration = lastVoiceAt - voiceStartAt;
       const silenceDuration = now - lastVoiceAt;
       const hasRecognizedText = currentSource.trim().length >= 2;
+      const hasTranslationText = (currentTarget1.trim().length > 0 || currentTarget2.trim().length > 0);
 
-      // 한 문장 발화 후 짧은 침묵(0.55초~0.75초) 감지 시 즉시 마이크를 잠그고 해당 1문장만 번역 확정
+      // 발화 후 침묵 감지 최적화: 번역 텍스트가 이미 생성 중이면 280ms, 인식 텍스트 있으면 350ms 만에 즉시 확정
       if (
-        (hasRecognizedText && silenceDuration >= 550) ||
-        (spokenDuration >= 300 && silenceDuration >= 750)
+        (hasTranslationText && silenceDuration >= 280) ||
+        (hasRecognizedText && silenceDuration >= 350) ||
+        (spokenDuration >= 200 && silenceDuration >= 450)
       ) {
         lockMicrophoneForSingleSentence();
         return;
@@ -2005,7 +2040,7 @@ function createTranslationWebSockets(wsUrl, config, onBothReady, onError) {
       refreshAllPanels();
       emitThrottledStreamUpdate();
       if (turnState === "finalizing") {
-        scheduleSingleSentenceFinalize(550);
+        scheduleSingleSentenceFinalize(180);
       }
     }
 
@@ -2014,10 +2049,10 @@ function createTranslationWebSockets(wsUrl, config, onBothReady, onError) {
       refreshAllPanels();
       emitThrottledStreamUpdate();
 
-      if (turnState === "listening" && lastVoiceAt > 0 && Date.now() - lastVoiceAt >= 380) {
+      if (turnState === "listening" && lastVoiceAt > 0 && Date.now() - lastVoiceAt >= 250) {
         lockMicrophoneForSingleSentence();
       } else if (turnState === "finalizing") {
-        scheduleSingleSentenceFinalize(ws2TurnDone ? 220 : 550);
+        scheduleSingleSentenceFinalize(ws2TurnDone ? 80 : 180);
       }
     }
 
@@ -2027,7 +2062,7 @@ function createTranslationWebSockets(wsUrl, config, onBothReady, onError) {
         lockMicrophoneForSingleSentence();
       }
       if (turnState === "finalizing") {
-        scheduleSingleSentenceFinalize(ws2TurnDone || currentTarget2.trim().length > 0 ? 180 : 550);
+        scheduleSingleSentenceFinalize(ws2TurnDone || currentTarget2.trim().length > 0 ? 60 : 180);
       }
     }
   };
@@ -2077,10 +2112,10 @@ function createTranslationWebSockets(wsUrl, config, onBothReady, onError) {
       refreshAllPanels();
       emitThrottledStreamUpdate();
 
-      if (turnState === "listening" && lastVoiceAt > 0 && Date.now() - lastVoiceAt >= 380) {
+      if (turnState === "listening" && lastVoiceAt > 0 && Date.now() - lastVoiceAt >= 250) {
         lockMicrophoneForSingleSentence();
       } else if (turnState === "finalizing") {
-        scheduleSingleSentenceFinalize(ws1TurnDone ? 220 : 550);
+        scheduleSingleSentenceFinalize(ws1TurnDone ? 80 : 180);
       }
     }
 
@@ -2090,7 +2125,7 @@ function createTranslationWebSockets(wsUrl, config, onBothReady, onError) {
         lockMicrophoneForSingleSentence();
       }
       if (turnState === "finalizing") {
-        scheduleSingleSentenceFinalize(ws1TurnDone || currentTarget1.trim().length > 0 ? 180 : 550);
+        scheduleSingleSentenceFinalize(ws1TurnDone || currentTarget1.trim().length > 0 ? 60 : 180);
       }
     }
   };

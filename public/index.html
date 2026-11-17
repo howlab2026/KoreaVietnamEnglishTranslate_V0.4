@@ -141,9 +141,18 @@
         </div>
 
         <div class="tts-bar-bottom">
+          <!-- 번역 1 전용 AI 목소리 선택 -->
           <div class="tts-voice-wrap">
-            <label for="voiceSelect" class="tts-sub-label">🎤 목소리:</label>
-            <select id="voiceSelect" class="voice-select" title="자연스러운 신경망 AI 목소리 선택">
+            <label for="voiceSelect1" id="voiceLabel1" class="tts-sub-label">🎤 🇻🇳 번역1 목소리:</label>
+            <select id="voiceSelect1" class="voice-select" title="번역 1 (베트남어) 신경망 AI 목소리 선택">
+              <option value="">AI 목소리 로딩 중...</option>
+            </select>
+          </div>
+
+          <!-- 번역 2 전용 AI 목소리 선택 -->
+          <div class="tts-voice-wrap">
+            <label for="voiceSelect2" id="voiceLabel2" class="tts-sub-label">🎤 🇺🇸 번역2 목소리:</label>
+            <select id="voiceSelect2" class="voice-select" title="번역 2 (영어) 신경망 AI 목소리 선택">
               <option value="">AI 목소리 로딩 중...</option>
             </select>
           </div>
