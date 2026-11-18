@@ -317,6 +317,135 @@ app.get("/api/tts", async (req, res) => {
 });
 
 /**
+ * POST /api/translate
+ * 최고 수준의 베트남어·영어·한국어 문맥 기반 고정밀 AI 통역 엔드포인트
+ * - 실시간 오디오 스트림(Live) 초안과 확정된 원문 전체 문맥을 결합하여
+ *   Gemini 3.5 Flash Lite / Gemini 3 Flash (병렬 레이스) + Google Neural NMT 폴백으로
+ *   완벽한 어순·존칭·전문용어가 반영된 번역을 생성합니다.
+ */
+const translateCache = new Map();
+const TRANSLATE_CACHE_MAX = 200;
+
+async function fetchGtxSingle(text, sl, tl) {
+  const url = `https://translate.googleapis.com/translate_a/single?client=gtx&sl=${encodeURIComponent(sl || "auto")}&tl=${encodeURIComponent(tl)}&dt=t&q=${encodeURIComponent(text)}`;
+  const res = await fetch(url, {
+    headers: { "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)" },
+  });
+  if (!res.ok) throw new Error(`GTX HTTP ${res.status}`);
+  const data = await res.json();
+  return (data?.[0] || []).map((seg) => seg?.[0] || "").join("").trim();
+}
+
+async function callGeminiTranslateModel(model, prompt, apiKey, timeoutMs = 2200) {
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), timeoutMs);
+  try {
+    const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${encodeURIComponent(apiKey)}`;
+    const res = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      signal: ctrl.signal,
+      body: JSON.stringify({
+        contents: [{ parts: [{ text: prompt }] }],
+        generationConfig: {
+          temperature: 0.1,
+          maxOutputTokens: 300,
+          responseMimeType: "application/json",
+          thinkingConfig: { thinkingLevel: "minimal" },
+        },
+      }),
+    });
+    if (!res.ok) throw new Error(`${model} HTTP ${res.status}`);
+    const data = await res.json();
+    const raw = data.candidates?.[0]?.content?.parts?.[0]?.text || "";
+    const parsed = JSON.parse(raw);
+    const obj = Array.isArray(parsed) ? parsed[0] : parsed;
+    const t1 = String(obj?.t1 || "").trim();
+    const t2 = String(obj?.t2 || "").trim();
+    if (!t1 || !t2) throw new Error(`${model} incomplete JSON`);
+    return { t1, t2, provider: model };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+app.post("/api/translate", async (req, res) => {
+  const sourceText = String(req.body?.sourceText || "").trim();
+  const sourceLang = String(req.body?.sourceLang || "ko").trim();
+  const target1Lang = String(req.body?.target1Lang || "vi").trim();
+  const target2Lang = String(req.body?.target2Lang || "en").trim();
+  const draftTarget1 = String(req.body?.draftTarget1 || "").trim();
+  const draftTarget2 = String(req.body?.draftTarget2 || "").trim();
+  const prevContext = String(req.body?.prevContext || "").trim();
+  const clientKey = String(req.body?.apiKey || "").trim();
+  const apiKey = GEMINI_API_KEY || clientKey;
+
+  if (!sourceText && !draftTarget1 && !draftTarget2) {
+    return res.status(400).json({ error: "sourceText is required" });
+  }
+
+  const cacheKey = `${sourceLang}|${target1Lang}|${target2Lang}|${sourceText}|${draftTarget1}`;
+  if (translateCache.has(cacheKey)) {
+    return res.json(translateCache.get(cacheKey));
+  }
+
+  const langNames = { ko: "Korean (한국어)", vi: "Vietnamese (Tiếng Việt)", en: "English (영어)" };
+  const prompt = [
+    "You are a world-class simultaneous interpreter specializing in Korean (ko), Vietnamese (vi), and English (en).",
+    `Translate the speaker's utterance from ${langNames[sourceLang] || sourceLang} into:`,
+    `- t1: ${langNames[target1Lang] || target1Lang}`,
+    `- t2: ${langNames[target2Lang] || target2Lang}`,
+    "Strict Quality Guidelines for Vietnamese (Tiếng Việt):",
+    "1. Produce 100% natural, fluent, grammatically complete Vietnamese with accurate tones/diacritics and SVO word order.",
+    "2. Use polite, respectful, and natural Vietnamese register appropriate for conferences/conversations (e.g., 'Xin chào', 'tôi / chúng tôi', 'bạn / quý vị', natural connectors). Never output broken, literal word-by-word translations or unfinished clauses.",
+    "3. If the Korean source has SOV structure (verb at the end), reconstruct the full sentence naturally in Vietnamese and English without omitting the final verb or meaning.",
+    prevContext ? `Previous sentence context: "${prevContext}"` : "",
+    sourceText ? `Speaker Utterance (${sourceLang}): "${sourceText}"` : "",
+    draftTarget1 ? `Live Audio Draft (${target1Lang}, for context/disambiguation only): "${draftTarget1}"` : "",
+    draftTarget2 ? `Live Audio Draft (${target2Lang}, for context/disambiguation only): "${draftTarget2}"` : "",
+    'Return ONLY a JSON object with keys "t1" and "t2": {"t1": "...", "t2": "..."}',
+  ].filter(Boolean).join("\n");
+
+  const runGtxFallback = async () => {
+    if (!sourceText) throw new Error("No sourceText for GTX");
+    const [t1, t2] = await Promise.all([
+      fetchGtxSingle(sourceText, sourceLang, target1Lang),
+      fetchGtxSingle(sourceText, sourceLang, target2Lang),
+    ]);
+    return { t1, t2, provider: "gtx-neural" };
+  };
+
+  try {
+    let result;
+    if (apiKey) {
+      try {
+        result = await Promise.any([
+          callGeminiTranslateModel("gemini-3.5-flash-lite", prompt, apiKey, 2400),
+          callGeminiTranslateModel("gemini-3-flash-preview", prompt, apiKey, 2400),
+        ]);
+      } catch (_) {
+        result = await runGtxFallback();
+      }
+    } else {
+      result = await runGtxFallback();
+    }
+
+    translateCache.set(cacheKey, result);
+    if (translateCache.size > TRANSLATE_CACHE_MAX) {
+      translateCache.delete(translateCache.keys().next().value);
+    }
+    return res.json(result);
+  } catch (err) {
+    console.warn("Translate API fallback:", err?.message || err);
+    return res.json({
+      t1: draftTarget1 || "",
+      t2: draftTarget2 || "",
+      provider: "live-draft",
+    });
+  }
+});
+
+/**
  * WebSocket Server for Real-time Listener Broadcast
  * Relays translation events from the speaker client to all listener clients.
  * - 하트비트로 끊어진 연결 정리
