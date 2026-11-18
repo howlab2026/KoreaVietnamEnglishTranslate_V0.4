@@ -39,8 +39,11 @@ const NEURAL_VOICES = {
     { id: "en-US-AndrewNeural", name: "Andrew (남성 · 따뜻하고 친근한 톤)", gender: "Male", lang: "en" }
   ],
   vi: [
-    { id: "vi-VN-HoaiMyNeural", name: "Hoài My (여성 · 성조와 억양이 완벽한 초자연 음성)", gender: "Female", lang: "vi" },
-    { id: "vi-VN-NamMinhNeural", name: "Nam Minh (남성 · 명확하고 부드러운 표준 성조 음성)", gender: "Male", lang: "vi" }
+    { id: "vi-VN-HoaiMyNeural", name: "Hoài My (여성 · 베트남 현지 표준 아나운서 96k HD)", gender: "Female", lang: "vi" },
+    { id: "vi-VN-NamMinhNeural", name: "Nam Minh (남성 · 베트남 현지 표준 아나운서 96k HD)", gender: "Male", lang: "vi" },
+    { id: "gemini-vi-Aoede", name: "Thảo Tiên · Gemini AI (여성 · 초자연 원어민 대화체)", gender: "Female", lang: "vi", geminiVoice: "Aoede" },
+    { id: "gemini-vi-Charon", name: "Minh Quân · Gemini AI (남성 · 중후한 원어민 표준)", gender: "Male", lang: "vi", geminiVoice: "Charon" },
+    { id: "gemini-vi-Puck", name: "Hoàng Nam · Gemini AI (남성 · 생동감 있는 원어민 대화체)", gender: "Male", lang: "vi", geminiVoice: "Puck" }
   ]
 };
 
@@ -97,8 +100,8 @@ function escapeXmlForSsml(str) {
 async function getWarmTtsClient(voice) {
   let client = ttsClients.get(voice);
   if (!client) {
-    client = new MsEdgeTTS({ connectionTimeoutMs: 6000, synthesisTimeoutMs: 12000 });
-    await client.setMetadata(voice, OUTPUT_FORMAT.AUDIO_24KHZ_48KBITRATE_MONO_MP3);
+    client = new MsEdgeTTS({ connectionTimeoutMs: 7000, synthesisTimeoutMs: 12000 });
+    await client.setMetadata(voice, OUTPUT_FORMAT.AUDIO_24KHZ_96KBITRATE_MONO_MP3);
     ttsClients.set(voice, client);
   }
   return client;
@@ -153,24 +156,30 @@ async function synthesizeOnce(text, voice, rate, pitch) {
   });
 }
 
-const VOICE_GENDER_MAP = new Map(
-  Object.values(NEURAL_VOICES).flat().map((v) => [v.id, v.gender])
+const VOICE_META_MAP = new Map(
+  Object.values(NEURAL_VOICES).flat().map((v) => [v.id, v])
 );
 
 async function fetchGeminiTtsFallback(text, voice, clientKey = "") {
   const apiKey = GEMINI_API_KEY || clientKey;
   if (!apiKey) throw new Error("GEMINI_API_KEY missing");
-  const gender = VOICE_GENDER_MAP.get(voice) || "Female";
-  const geminiVoice = gender === "Male" ? "Charon" : "Kore";
+  const meta = VOICE_META_MAP.get(voice);
+  const gender = meta?.gender || (voice.toLowerCase().includes("nam") || voice.includes("Charon") || voice.includes("Puck") ? "Male" : "Female");
+  const geminiVoice = meta?.geminiVoice || (gender === "Male" ? "Charon" : "Aoede");
+  const langCode = meta?.lang || (voice.includes("vi") || voice.includes("VN") ? "vi" : voice.includes("en") || voice.includes("US") ? "en" : "ko");
+  const localeMap = { vi: "vi-VN", en: "en-US", ko: "ko-KR" };
+  const languageCode = localeMap[langCode] || "vi-VN";
+
   const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash-lite-tts:generateContent?key=${encodeURIComponent(apiKey)}`;
   const res = await fetch(url, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
-      contents: [{ parts: [{ text: String(text || "").slice(0, 400) }] }],
+      contents: [{ parts: [{ text: String(text || "").slice(0, 450) }] }],
       generationConfig: {
         responseModalities: ["AUDIO"],
         speechConfig: {
+          languageCode,
           voiceConfig: {
             prebuiltVoiceConfig: { voiceName: geminiVoice },
           },
@@ -185,12 +194,12 @@ async function fetchGeminiTtsFallback(text, voice, clientKey = "") {
   return {
     buffer: Buffer.from(inline.data, "base64"),
     contentType: inline.mimeType || "audio/wav",
-    provider: `gemini-tts(${geminiVoice})`,
+    provider: `gemini-tts(${geminiVoice},${languageCode})`,
   };
 }
 
 async function fetchGoogleTtsFallback(text, voice) {
-  const tl = voice.startsWith("vi") ? "vi" : voice.startsWith("en") ? "en" : "ko";
+  const tl = voice.includes("vi") ? "vi" : voice.includes("en") ? "en" : "ko";
   const q = String(text || "").slice(0, 200);
   const url = `https://translate.google.com/translate_tts?ie=UTF-8&tl=${tl}&client=tw-ob&q=${encodeURIComponent(q)}`;
   const res = await fetch(url, {
@@ -206,11 +215,22 @@ async function fetchGoogleTtsFallback(text, voice) {
 }
 
 async function synthesizeWithRetry(text, voice, rate, pitch, clientKey = "") {
+  // 사용자가 Gemini AI 초자연 원어민 음성(gemini-vi-*)을 직접 선택한 경우 즉시 Gemini Native TTS로 합성
+  if (voice.startsWith("gemini-")) {
+    try {
+      return await fetchGeminiTtsFallback(text, voice, clientKey);
+    } catch (err) {
+      console.warn("Direct Gemini TTS failed, falling back to Edge Neural HD:", err?.message || err);
+      const fallbackEdgeVoice = VOICE_META_MAP.get(voice)?.gender === "Male" ? "vi-VN-NamMinhNeural" : "vi-VN-HoaiMyNeural";
+      voice = fallbackEdgeVoice;
+    }
+  }
+
   let lastErr;
   for (let attempt = 0; attempt <= TTS_RETRY_COUNT; attempt++) {
     try {
       const buf = await synthesizeOnce(text, voice, rate, pitch);
-      return { buffer: buf, contentType: "audio/mpeg", provider: `msedge(${voice})` };
+      return { buffer: buf, contentType: "audio/mpeg", provider: `msedge-96k(${voice})` };
     } catch (err) {
       lastErr = err;
       resetTtsClient(voice);
@@ -218,7 +238,7 @@ async function synthesizeWithRetry(text, voice, rate, pitch, clientKey = "") {
     }
   }
   // Edge TTS WebSocket이 차단/실패한 경우(클라우드/서버리스 등):
-  // 1순위: 성별(남성/여성)이 정확히 유지되는 Gemini Neural TTS 폴백
+  // 1순위: 성별(남성/여성) 및 원어민 발음(vi-VN)이 정확히 유지되는 Gemini Neural TTS 폴백
   try {
     return await fetchGeminiTtsFallback(text, voice, clientKey);
   } catch (geminiErr) {

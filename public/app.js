@@ -108,8 +108,11 @@ const DEFAULT_NEURAL_VOICES = {
     { id: "en-US-AndrewNeural", name: "Andrew (남성 · 따뜻하고 친근한 톤)", gender: "Male", lang: "en" },
   ],
   vi: [
-    { id: "vi-VN-HoaiMyNeural", name: "Hoài My (여성 · 성조와 억양이 완벽한 초자연 음성)", gender: "Female", lang: "vi" },
-    { id: "vi-VN-NamMinhNeural", name: "Nam Minh (남성 · 명확하고 부드러운 표준 성조 음성)", gender: "Male", lang: "vi" },
+    { id: "vi-VN-HoaiMyNeural", name: "Hoài My (여성 · 베트남 현지 표준 아나운서 96k HD)", gender: "Female", lang: "vi" },
+    { id: "vi-VN-NamMinhNeural", name: "Nam Minh (남성 · 베트남 현지 표준 아나운서 96k HD)", gender: "Male", lang: "vi" },
+    { id: "gemini-vi-Aoede", name: "Thảo Tiên · Gemini AI (여성 · 초자연 원어민 대화체)", gender: "Female", lang: "vi", geminiVoice: "Aoede" },
+    { id: "gemini-vi-Charon", name: "Minh Quân · Gemini AI (남성 · 중후한 원어민 표준)", gender: "Male", lang: "vi", geminiVoice: "Charon" },
+    { id: "gemini-vi-Puck", name: "Hoàng Nam · Gemini AI (남성 · 생동감 있는 원어민 대화체)", gender: "Male", lang: "vi", geminiVoice: "Puck" },
   ],
 };
 
@@ -713,9 +716,29 @@ async function fetchVoicesForLang(langCode) {
   return voicesByLang[langCode] || DEFAULT_NEURAL_VOICES[langCode] || [];
 }
 
+const selectedVoiceByLang = {
+  ko: "",
+  en: "",
+  vi: "",
+};
+let lastInteractedVoiceLang = null;
+
+try {
+  ["ko", "en", "vi"].forEach((lc) => {
+    const saved = localStorage.getItem(`unified_voice_${lc}`);
+    if (saved) selectedVoiceByLang[lc] = saved;
+  });
+} catch (_) {}
+
 function renderVoiceOptions(selectEl, langCode, voices) {
   if (!selectEl) return;
-  const savedVoiceId = localStorage.getItem(`unified_voice_${langCode}`);
+  let savedVoiceId = selectedVoiceByLang[langCode] || "";
+  if (!savedVoiceId) {
+    try {
+      savedVoiceId = localStorage.getItem(`unified_voice_${langCode}`) || "";
+    } catch (_) {}
+  }
+
   selectEl.innerHTML = "";
   let matched = false;
   voices.forEach((v, idx) => {
@@ -734,6 +757,9 @@ function renderVoiceOptions(selectEl, langCode, voices) {
   });
   if (!matched && voices.length > 0) {
     selectEl.selectedIndex = 0;
+  }
+  if (selectEl.value) {
+    selectedVoiceByLang[langCode] = selectEl.value;
   }
 }
 
@@ -767,8 +793,14 @@ function getVoiceIdForLang(langCode) {
     voiceId = voiceSelect1.value;
   } else if (config.target2.code === langCode && voiceSelect2?.value) {
     voiceId = voiceSelect2.value;
-  } else {
-    voiceId = localStorage.getItem(`unified_voice_${langCode}`);
+  }
+  if (!voiceId && selectedVoiceByLang[langCode]) {
+    voiceId = selectedVoiceByLang[langCode];
+  }
+  if (!voiceId) {
+    try {
+      voiceId = localStorage.getItem(`unified_voice_${langCode}`) || "";
+    } catch (_) {}
   }
 
   const list = voicesByLang[langCode] || DEFAULT_NEURAL_VOICES[langCode] || [];
@@ -779,6 +811,8 @@ function getVoiceIdForLang(langCode) {
 voiceSelect1?.addEventListener("change", () => {
   const config = LANG_CONFIGS[selectedLang];
   if (voiceSelect1.value) {
+    selectedVoiceByLang[config.target1.code] = voiceSelect1.value;
+    lastInteractedVoiceLang = config.target1.code;
     try {
       localStorage.setItem(`unified_voice_${config.target1.code}`, voiceSelect1.value);
     } catch (_) {}
@@ -788,6 +822,8 @@ voiceSelect1?.addEventListener("change", () => {
 voiceSelect2?.addEventListener("change", () => {
   const config = LANG_CONFIGS[selectedLang];
   if (voiceSelect2.value) {
+    selectedVoiceByLang[config.target2.code] = voiceSelect2.value;
+    lastInteractedVoiceLang = config.target2.code;
     try {
       localStorage.setItem(`unified_voice_${config.target2.code}`, voiceSelect2.value);
     } catch (_) {}
@@ -949,21 +985,72 @@ function playSingleUtterance(text, langCode) {
     const keyParam = savedKey ? `&apiKey=${encodeURIComponent(savedKey)}` : "";
     const url = `/api/tts?text=${encodeURIComponent(clean)}&voice=${encodeURIComponent(voiceId)}&rate=${encodeURIComponent(rateStr)}&pitch=${encodeURIComponent(pitchStr)}${keyParam}`;
 
-    let audioUrl = url;
+    let audioUrl = "";
     let blobUrlToRevoke = null;
 
-    try {
-      const res = await fetch(url);
-      if (res.ok) {
-        const blob = await res.blob();
-        blobUrlToRevoke = URL.createObjectURL(blob);
-        audioUrl = blobUrlToRevoke;
-      }
-    } catch (_) {}
+    // 1순위: 서버 고음질 Neural TTS (96kbps Edge Neural HD + Gemini Native TTS)
+    for (let attempt = 0; attempt < 2; attempt++) {
+      try {
+        const res = await fetch(url, { cache: "no-store" });
+        if (res.ok) {
+          const blob = await res.blob();
+          if (blob.size > 100) {
+            blobUrlToRevoke = URL.createObjectURL(blob);
+            audioUrl = blobUrlToRevoke;
+            break;
+          }
+        }
+      } catch (_) {}
+    }
+
+    // 2순위: 정적 배포/네트워크 장애 시 브라우저에서 직접 Gemini Native TTS (vi-VN 원어민 발음 & 남/여 성별 유지) 호출
+    if (!audioUrl && savedKey) {
+      try {
+        const isMale = voiceId.includes("NamMinh") || voiceId.includes("Charon") || voiceId.includes("Puck") || voiceId.includes("InJoon") || voiceId.includes("Hyunsu") || voiceId.includes("Guy") || voiceId.includes("Christopher") || voiceId.includes("Andrew");
+        const geminiVoice = voiceId.includes("Puck") ? "Puck" : isMale ? "Charon" : "Aoede";
+        const localeMap = { vi: "vi-VN", en: "en-US", ko: "ko-KR" };
+        const gRes = await fetch(
+          `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash-lite-tts:generateContent?key=${encodeURIComponent(savedKey)}`,
+          {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              contents: [{ parts: [{ text: clean.slice(0, 450) }] }],
+              generationConfig: {
+                responseModalities: ["AUDIO"],
+                speechConfig: {
+                  languageCode: localeMap[langCode] || "vi-VN",
+                  voiceConfig: { prebuiltVoiceConfig: { voiceName: geminiVoice } },
+                },
+              },
+            }),
+          }
+        );
+        if (gRes.ok) {
+          const gData = await gRes.json();
+          const inline = gData.candidates?.[0]?.content?.parts?.[0]?.inlineData;
+          if (inline?.data) {
+            const binStr = atob(inline.data);
+            const bytes = new Uint8Array(binStr.length);
+            for (let i = 0; i < binStr.length; i++) bytes[i] = binStr.charCodeAt(i);
+            const blob = new Blob([bytes], { type: inline.mimeType || "audio/wav" });
+            blobUrlToRevoke = URL.createObjectURL(blob);
+            audioUrl = blobUrlToRevoke;
+          }
+        }
+      } catch (_) {}
+    }
+
+    if (!audioUrl) {
+      audioUrl = url;
+    }
 
     const audio = new Audio(audioUrl);
     currentAudio = audio;
     audio.volume = volume;
+    if (voiceId.startsWith("gemini-") && speed !== 1.0) {
+      audio.playbackRate = speed;
+    }
 
     let done = false;
     const finish = () => {
@@ -983,8 +1070,19 @@ function playSingleUtterance(text, langCode) {
         return;
       }
       try {
+        // 해당 언어(특히 베트남어 vi) 전용 로컬 원어민 음성이 설치된 경우에만 폴백 허용
+        // 한국어 OS 기본 여성 음성(Microsoft Heami)이 베트남어를 어색하게 읽는 현상을 원천 차단
+        const voices = window.speechSynthesis.getVoices() || [];
+        const matchingVoices = voices.filter((v) => v.lang.toLowerCase().startsWith(langCode.toLowerCase()));
+        if (langCode === "vi" && matchingVoices.length === 0) {
+          finish();
+          return;
+        }
         const utt = new SpeechSynthesisUtterance(clean);
-        utt.lang = langCode;
+        utt.lang = langCode === "vi" ? "vi-VN" : langCode === "en" ? "en-US" : "ko-KR";
+        if (matchingVoices.length > 0) {
+          utt.voice = matchingVoices[0];
+        }
         utt.rate = speed;
         utt.volume = volume;
         utt.onend = finish;
@@ -1050,7 +1148,7 @@ stopTtsBtn?.addEventListener("click", () => {
 testVoiceBtn?.addEventListener("click", async () => {
   unlockAudio();
   ttsPlaybackAborted = false;
-  const langCode = getActiveTtsVoiceLangCode();
+  const langCode = lastInteractedVoiceLang || getActiveTtsVoiceLangCode();
   const sample = SAMPLE_SENTENCES[langCode] || SAMPLE_SENTENCES.ko;
   await playSingleUtterance(sample, langCode);
   setSpeakingIndicator(false, "TTS 대기");

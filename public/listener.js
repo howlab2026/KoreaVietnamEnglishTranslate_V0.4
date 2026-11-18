@@ -264,8 +264,11 @@ const DEFAULT_NEURAL_VOICES = {
     { id: "en-US-AndrewNeural", name: "Andrew (남성 · 따뜻하고 친근한 톤)", gender: "Male", lang: "en" }
   ],
   vi: [
-    { id: "vi-VN-HoaiMyNeural", name: "Hoài My (여성 · 성조와 억양이 완벽한 초자연 음성)", gender: "Female", lang: "vi" },
-    { id: "vi-VN-NamMinhNeural", name: "Nam Minh (남성 · 명확하고 부드러운 표준 성조 음성)", gender: "Male", lang: "vi" }
+    { id: "vi-VN-HoaiMyNeural", name: "Hoài My (여성 · 베트남 현지 표준 아나운서 96k HD)", gender: "Female", lang: "vi" },
+    { id: "vi-VN-NamMinhNeural", name: "Nam Minh (남성 · 베트남 현지 표준 아나운서 96k HD)", gender: "Male", lang: "vi" },
+    { id: "gemini-vi-Aoede", name: "Thảo Tiên · Gemini AI (여성 · 초자연 원어민 대화체)", gender: "Female", lang: "vi", geminiVoice: "Aoede" },
+    { id: "gemini-vi-Charon", name: "Minh Quân · Gemini AI (남성 · 중후한 원어민 표준)", gender: "Male", lang: "vi", geminiVoice: "Charon" },
+    { id: "gemini-vi-Puck", name: "Hoàng Nam · Gemini AI (남성 · 생동감 있는 원어민 대화체)", gender: "Male", lang: "vi", geminiVoice: "Puck" }
   ]
 };
 
@@ -429,8 +432,16 @@ function fallbackWebSpeech(text, callback) {
     if (callback) callback();
     return;
   }
+  const lc = LANG_META[selectedTargetLang]?.code || "ko";
+  const voices = window.speechSynthesis.getVoices() || [];
+  const matching = voices.filter((v) => v.lang.toLowerCase().startsWith(lc.toLowerCase()));
+  if (lc === "vi" && matching.length === 0) {
+    if (callback) callback();
+    return;
+  }
   const utt = new SpeechSynthesisUtterance(text);
-  utt.lang = LANG_META[selectedTargetLang]?.code || "ko";
+  utt.lang = lc === "vi" ? "vi-VN" : lc === "en" ? "en-US" : "ko-KR";
+  if (matching.length > 0) utt.voice = matching[0];
   utt.rate = Number(ttsRate?.value || 1.0);
   utt.volume = Number(ttsVolume?.value || 1.0);
   utt.onend = () => { if (callback) callback(); };
