@@ -157,11 +157,12 @@ const VOICE_GENDER_MAP = new Map(
   Object.values(NEURAL_VOICES).flat().map((v) => [v.id, v.gender])
 );
 
-async function fetchGeminiTtsFallback(text, voice) {
-  if (!GEMINI_API_KEY) throw new Error("GEMINI_API_KEY missing");
+async function fetchGeminiTtsFallback(text, voice, clientKey = "") {
+  const apiKey = GEMINI_API_KEY || clientKey;
+  if (!apiKey) throw new Error("GEMINI_API_KEY missing");
   const gender = VOICE_GENDER_MAP.get(voice) || "Female";
   const geminiVoice = gender === "Male" ? "Charon" : "Kore";
-  const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash-lite-tts:generateContent?key=${encodeURIComponent(GEMINI_API_KEY)}`;
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash-lite-tts:generateContent?key=${encodeURIComponent(apiKey)}`;
   const res = await fetch(url, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -204,7 +205,7 @@ async function fetchGoogleTtsFallback(text, voice) {
   return { buffer: buf, contentType: "audio/mpeg", provider: "google-fallback" };
 }
 
-async function synthesizeWithRetry(text, voice, rate, pitch) {
+async function synthesizeWithRetry(text, voice, rate, pitch, clientKey = "") {
   let lastErr;
   for (let attempt = 0; attempt <= TTS_RETRY_COUNT; attempt++) {
     try {
@@ -219,7 +220,7 @@ async function synthesizeWithRetry(text, voice, rate, pitch) {
   // Edge TTS WebSocket이 차단/실패한 경우(클라우드/서버리스 등):
   // 1순위: 성별(남성/여성)이 정확히 유지되는 Gemini Neural TTS 폴백
   try {
-    return await fetchGeminiTtsFallback(text, voice);
+    return await fetchGeminiTtsFallback(text, voice, clientKey);
   } catch (geminiErr) {
     console.warn("Gemini TTS fallback failed:", geminiErr?.message || geminiErr);
   }
@@ -241,6 +242,7 @@ app.get("/api/tts", async (req, res) => {
   let voice = String(req.query.voice || "").trim();
   let rate = String(req.query.rate || "+0%").trim();
   let pitch = String(req.query.pitch || "+0Hz").trim();
+  const clientKey = String(req.query.apiKey || "").trim();
 
   if (!text) return res.status(400).json({ error: "Text is required" });
   if (text.length > TTS_MAX_TEXT_LENGTH) {
@@ -294,7 +296,7 @@ app.get("/api/tts", async (req, res) => {
     try {
       let pending = ttsInflight.get(key);
       if (!pending) {
-        pending = synthesizeWithRetry(text, voice, rate, pitch).finally(() => ttsInflight.delete(key));
+        pending = synthesizeWithRetry(text, voice, rate, pitch, clientKey).finally(() => ttsInflight.delete(key));
         ttsInflight.set(key, pending);
       }
       audio = await pending;

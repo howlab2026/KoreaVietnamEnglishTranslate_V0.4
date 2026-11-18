@@ -942,7 +942,12 @@ function playSingleUtterance(text, langCode) {
     }
     setSpeakingIndicator(true, `🔊 TTS 읽는 중 (${langCode.toUpperCase()})...`);
 
-    const url = `/api/tts?text=${encodeURIComponent(clean)}&voice=${encodeURIComponent(voiceId)}&rate=${encodeURIComponent(rateStr)}&pitch=${encodeURIComponent(pitchStr)}`;
+    let savedKey = _cachedApiKey || "";
+    if (!savedKey) {
+      try { savedKey = localStorage.getItem("kv_gemini_api_key") || ""; } catch (_) {}
+    }
+    const keyParam = savedKey ? `&apiKey=${encodeURIComponent(savedKey)}` : "";
+    const url = `/api/tts?text=${encodeURIComponent(clean)}&voice=${encodeURIComponent(voiceId)}&rate=${encodeURIComponent(rateStr)}&pitch=${encodeURIComponent(pitchStr)}${keyParam}`;
 
     let audioUrl = url;
     let blobUrlToRevoke = null;
