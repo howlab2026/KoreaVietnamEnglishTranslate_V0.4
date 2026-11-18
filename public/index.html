@@ -10,7 +10,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@500;600;700;800&family=Noto+Sans+KR:wght@400;500;700;800&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="/style.css?v=4.2.0">
+  <link rel="stylesheet" href="/style.css?v=4.3.0">
 </head>
 <body>
   <!-- 보안 인증 모달 오버레이 (인증번호 2026 필수 입력) -->
@@ -201,9 +201,9 @@
         <button id="startBtn" class="btn-start-session" type="button" title="1단계: 번역 세션을 시작합니다">
           🚀 1. 번역 시작
         </button>
-        <!-- 버튼 2: 문장 번역 (번역 시작 후 한 문장씩 번역할 때만 눌러서 작동) -->
-        <button id="sentenceTranslateBtn" class="btn-sentence-translate" type="button" disabled title="2단계: 한 문장을 말하고 번역 및 TTS를 진행할 때마다 누르세요">
-          🗣️ 2. 문장 번역 (한 문장 말하기)
+        <!-- 버튼 2: PT 포인터 / 문장 발화 시작·완료 토글 -->
+        <button id="sentenceTranslateBtn" class="btn-sentence-translate" type="button" title="PT 마우스 포인터(클릭/PageDown/Space) 1회: 발화 시작 → 말씀 완료 후 다시 1회: 전체 음성을 듣고 생각한 뒤 번역 실행">
+          🎯 2. 발화 시작 (PT 포인터 클릭)
         </button>
         <!-- 세션 중지 버튼 -->
         <button id="stopBtn" class="btn-stop-session" disabled type="button" title="번역 세션 종료">
@@ -378,6 +378,6 @@
     </div>
   </div>
 
-  <script src="/app.js?v=4.2.0"></script>
+  <script src="/app.js?v=4.3.0"></script>
 </body>
 </html>
